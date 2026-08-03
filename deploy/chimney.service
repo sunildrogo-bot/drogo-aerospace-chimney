@@ -1,0 +1,14 @@
+[Unit]
+Description=Gunicorn instance for Chimney (NOVA+) app
+After=network.target
+
+[Service]
+User=deploy
+Group=www-data
+WorkingDirectory=/home/deploy/chimney-app
+EnvironmentFile=/home/deploy/chimney-app/.env
+ExecStart=/home/deploy/chimney-app/venv/bin/gunicorn --workers 3 --bind unix:chimney.sock -m 007 app:app
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

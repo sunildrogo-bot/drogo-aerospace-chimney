@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+venv/
+instance/
+frontend/node_modules/
+frontend/dist/
+*.sock
