@@ -78,9 +78,14 @@ function deleteChimneyProject(event, id, name) {
 }
 
 function chimneyCardHtml(p) {
+  const upload = p.upload_status && p.upload_status.active;
   const modelTag = p.has_model
     ? '<div class="card-model-tag ready">3D MODEL READY</div>'
     : '<div class="card-model-tag pending">MODEL PENDING</div>';
+  const uploadStatus = upload ? (upload.state === 'processing' ? 'PROCESSING ON SERVER' :
+    upload.state === 'queued' ? 'QUEUED' : 'UPLOADING') : '';
+  const pct = upload && upload.size ? Math.round(upload.received * 100 / upload.size) : 0;
+  const uploadLine = upload ? `<div style="font-size:11px;color:var(--accent);margin-top:6px;" role="status">${escapeHtml(upload.filename)} — ${uploadStatus}${upload.state === 'uploading' ? ` · ${pct}%` : ''}</div>` : '';
   const typeTag = p.asset_category === 'water_tank' ? 'WATER TANK' : (p.structure_type || 'CHIMNEY');
   return `
     <div class="project-card" style="position:relative;" onclick="openProject(${p.id})">
@@ -91,6 +96,7 @@ function chimneyCardHtml(p) {
       <div class="card-body">
         <div class="card-title">${escapeHtml(p.asset_name)}</div>
         <div class="card-desc">${escapeHtml(p.inspection_type || 'Inspection type not set')} · ${p.latitude.toFixed(4)}, ${p.longitude.toFixed(4)}</div>
+        ${uploadLine}
         <div class="card-meta">
           <span class="meta-chip active">${escapeHtml(p.status || 'Active')}</span>
         </div>
@@ -129,4 +135,7 @@ async function loadChimneyProjects() {
   }
 }
 
-document.addEventListener('DOMContentLoaded', loadChimneyProjects);
+document.addEventListener('DOMContentLoaded', () => {
+  loadChimneyProjects();
+  window.setInterval(loadChimneyProjects, 5000);
+});

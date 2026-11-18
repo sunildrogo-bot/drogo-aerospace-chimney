@@ -16,6 +16,31 @@
   /* Hide Cesium ion watermark / credits entirely */
   .cesium-viewer-bottom,.cesium-widget-credits,.cesium-credit-expand-link,.cesium-credit-lightbox-overlay{display:none !important;}
 
+  /* ── Independent upload checklist; visible with and without a 3D model ── */
+  .chim-assets{flex-shrink:0;background:var(--bg-panel);border-bottom:1px solid var(--border-soft);padding:9px 22px;color:var(--text-primary);}
+  .chim-assets.drag{outline:2px dashed var(--accent);outline-offset:-3px;}
+  .chim-assets-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px;}
+  .chim-assets-head strong{font-size:12px;font-weight:800;}
+  .chim-assets-head small{font-size:11px;color:var(--text-muted);margin-left:8px;}
+  .chim-assets-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}
+  .chim-asset-row{display:flex;align-items:center;gap:9px;border:1px solid var(--border-soft);background:var(--bg-elevated);border-radius:9px;padding:7px 10px;min-width:0;}
+  .chim-asset-icon{width:23px;height:23px;display:grid;place-items:center;flex-shrink:0;border-radius:50%;font-size:15px;font-weight:800;color:var(--accent);background:var(--bg-elevated-2);border:1px solid var(--border);}
+  .chim-asset-icon.ready{background:rgba(31,157,104,.13);color:var(--success);border-color:rgba(31,157,104,.3);}
+  .chim-asset-meta{display:flex;flex:1;flex-direction:column;min-width:0;line-height:1.35;}
+  .chim-asset-meta b{font-size:12px;}
+  .chim-asset-state{color:var(--text-muted);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .chim-asset-add{background:transparent;border:1px solid var(--border);color:var(--accent);border-radius:7px;font-size:11px;padding:5px 8px;cursor:pointer;white-space:nowrap;}
+  .chim-asset-add:hover{background:var(--bg-elevated-2);}
+  .chim-asset-add:disabled{opacity:.4;cursor:wait;}
+  .chim-assets-files{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;max-height:43px;overflow:auto;font-size:10px;color:var(--text-muted);}
+  .chim-asset-file{display:inline-block;background:var(--bg-elevated-2);border:1px solid var(--border-soft);border-radius:5px;padding:3px 6px;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .chim-assets-status{font-size:11px;margin-top:4px;color:var(--success);}
+  .chim-assets-status.error{color:var(--danger);}
+  .chim-assets-progress{display:flex;align-items:center;gap:7px;margin-top:4px;}
+  .chim-assets-progress[hidden]{display:none !important;}
+  .chim-assets-progress progress{width:230px;height:8px;accent-color:var(--accent);}
+  @media(max-width:700px){.chim-assets{padding:8px 10px;}.chim-assets-grid{grid-template-columns:1fr;}.chim-assets-head small{display:block;margin-left:0;}}
+
   /* ── Upload overlay ── */
   .upload-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg-base);z-index:50;}
   .upload-box{width:420px;border:2px dashed var(--border-strong);border-radius:var(--radius-lg);background:var(--bg-elevated);padding:36px 32px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;}
@@ -392,6 +417,36 @@
     {% endif %}
   </div>
 
+  <section class="chim-assets" id="chim-assets" aria-label="Project uploaded files">
+    <div class="chim-assets-head">
+      <div><strong>Project Files</strong><small>✓ uploaded &nbsp; · &nbsp; + add missing files &nbsp; · &nbsp; Existing models are never replaced automatically</small></div>
+      {% if is_admin %}
+      <button type="button" class="chim-asset-add" data-upload-kind="all" onclick="chimSelectAssets('all')">+ Upload files / ZIP</button>
+      {% endif %}
+    </div>
+    <div class="chim-assets-grid">
+      <div class="chim-asset-row" data-asset-kind="3tz">
+        <span class="chim-asset-icon">+</span>
+        <div class="chim-asset-meta"><b>3TZ / 3D Model</b><span class="chim-asset-state">Checking…</span></div>
+        {% if is_admin %}<button type="button" class="chim-asset-add" data-upload-kind="3tz" onclick="chimSelectAssets('3tz')">+ Add</button>{% endif %}
+      </div>
+      <div class="chim-asset-row" data-asset-kind="ortho">
+        <span class="chim-asset-icon">+</span>
+        <div class="chim-asset-meta"><b>Orthophoto</b><span class="chim-asset-state">Checking…</span></div>
+        {% if is_admin %}<button type="button" class="chim-asset-add" data-upload-kind="ortho" onclick="chimSelectAssets('ortho')">+ Add</button>{% endif %}
+      </div>
+      <div class="chim-asset-row" data-asset-kind="tileset_json">
+        <span class="chim-asset-icon">+</span>
+        <div class="chim-asset-meta"><b>tileset.json</b><span class="chim-asset-state">Checking…</span></div>
+        {% if is_admin %}<button type="button" class="chim-asset-add" data-upload-kind="tileset_json" onclick="chimSelectAssets('tileset_json')">+ Add</button>{% endif %}
+      </div>
+    </div>
+    <div class="chim-assets-files" id="chim-assets-list" aria-live="polite">Loading project file list…</div>
+    <div class="chim-assets-progress" id="chim-assets-progress" hidden><progress id="chim-assets-progress-value" value="0" max="100"></progress></div>
+    <div class="chim-assets-status" id="chim-assets-status" aria-live="polite"></div>
+    {% if is_admin %}<input type="file" id="chim-assets-input" multiple hidden />{% endif %}
+  </section>
+
   <script>
     window.CHIM_IS_ADMIN = {{ is_admin|tojson }};
     window.CHIM_INSPECTION_SCOPE = {{ (project.inspection_scope or '')|tojson }};
@@ -439,7 +494,7 @@
           <div class="upload-box" id="upload-box" onclick="document.getElementById('tileset-input').click()">
             <div class="icn">⛰️</div>
             <h3>Upload the 3D model</h3>
-            <p>Drag &amp; drop a <b>.3tz</b> or <b>.zip</b> archive containing<br/><code>tileset.json</code>, or click to choose a file.</p>
+            <p>Drag &amp; drop a <b>.3tz</b> or <b>.zip</b> model with <code>tileset.json</code>, or click to choose it.<br/>For individual JSON or orthophoto uploads, use <b>Project Files</b> above.</p>
             <div class="upload-status" id="upload-status"></div>
             <div class="upload-progress-track" id="upload-progress-track">
               <div class="upload-progress-fill" id="upload-progress-fill"></div>
@@ -640,4 +695,5 @@
   window.CHIM_MODEL_CENTER_LNG = {{ project.model_center_lng|tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/chimney_viewer.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chimney_assets.js') }}"></script>
 {% endblock %}

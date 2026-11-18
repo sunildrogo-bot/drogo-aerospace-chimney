@@ -62,91 +62,18 @@ function hideHint() { document.getElementById('hint-toast').classList.remove('op
 /* ── Upload flow (3D model) ─────────────────────────────────────────────── */
 
 function setupUpload() {
-  const box   = document.getElementById('upload-box');
+  const box = document.getElementById('upload-box');
   const input = document.getElementById('tileset-input');
-  const status = document.getElementById('upload-status');
-  if (!box) return;
-
-  input.addEventListener('change', () => { if (input.files[0]) uploadTileset(input.files[0]); });
-
-  ['dragenter','dragover'].forEach(evt =>
-    box.addEventListener(evt, e => { e.preventDefault(); box.classList.add('drag'); }));
-  ['dragleave','drop'].forEach(evt =>
-    box.addEventListener(evt, e => { e.preventDefault(); box.classList.remove('drag'); }));
-  box.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) uploadTileset(f); });
-
-  async function uploadTileset(file) {
-    const ext = file.name.split('.').pop().toLowerCase();
-    if (!['3tz','zip'].includes(ext)) {
-      status.textContent = 'File must be a .3tz or .zip archive.';
-      status.className = 'upload-status error'; return;
-    }
-
-    const track = document.getElementById('upload-progress-track');
-    const fill  = document.getElementById('upload-progress-fill');
-    const pct   = document.getElementById('upload-progress-pct');
-
-    status.textContent = 'Uploading…';
-    status.className = 'upload-status';
-    track.classList.add('show');
-    fill.classList.remove('indeterminate');
-    fill.style.width = '0%';
-    pct.textContent = '0%';
-
-    const fd = new FormData();
-    fd.append('tileset_file', file);
-
-    await new Promise((resolve) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `/api/chimney-projects/${window.CHIM_PROJECT_ID}/tileset`);
-
-      // Real upload-transfer percentage (file → server).
-      xhr.upload.addEventListener('progress', (e) => {
-        if (!e.lengthComputable) return;
-        const p = Math.round((e.loaded / e.total) * 100);
-        fill.style.width = p + '%';
-        pct.textContent = `Uploading… ${p}%`;
-      });
-
-      // Upload finished — server is now extracting the archive. There's no
-      // byte-level signal for that phase, so switch to an indeterminate bar
-      // instead of freezing at 100%.
-      xhr.upload.addEventListener('load', () => {
-        status.textContent = 'Extracting the model…';
-        fill.classList.add('indeterminate');
-        pct.textContent = 'Extracting…';
-      });
-
-      xhr.onload = () => {
-        let data = {};
-        try { data = JSON.parse(xhr.responseText); } catch (_) {}
-        if (xhr.status >= 200 && xhr.status < 300) {
-          fill.classList.remove('indeterminate');
-          fill.style.width = '100%';
-          pct.textContent = '100%';
-          status.textContent = 'Model ready — loading viewer…';
-          status.className = 'upload-status ok';
-          setTimeout(() => window.location.reload(), 500);
-        } else {
-          fill.classList.remove('indeterminate');
-          track.classList.remove('show');
-          status.textContent = data.error || 'Upload failed.';
-          status.className = 'upload-status error';
-        }
-        resolve();
-      };
-
-      xhr.onerror = () => {
-        fill.classList.remove('indeterminate');
-        track.classList.remove('show');
-        status.textContent = 'Network error — please try again.';
-        status.className = 'upload-status error';
-        resolve();
-      };
-
-      xhr.send(fd);
-    });
-  }
+  if (!box || !input) return;
+  const upload = files => {
+    if (window.chimQueueFiles) window.chimQueueFiles(files);
+  };
+  input.addEventListener('change', () => upload(input.files));
+  for (const type of ['dragenter', 'dragover'])
+    box.addEventListener(type, e => { e.preventDefault(); box.classList.add('drag'); });
+  for (const type of ['dragleave', 'drop'])
+    box.addEventListener(type, e => { e.preventDefault(); box.classList.remove('drag'); });
+  box.addEventListener('drop', e => upload(e.dataTransfer.files));
 }
 
 /* ── Viewer setup ─────────────────────────────────────────────────────────── */

@@ -33,4 +33,5 @@ RUN mkdir -p static/uploads instance
 
 EXPOSE 8000
 
-CMD ["gunicorn", "--workers", "3", "--bind", "0.0.0.0:8000", "app:app"]
+# Keep existing Gunicorn app running alongside a supervised upload worker.
+CMD ["python", "-u", "chimney_process_manager.py"]

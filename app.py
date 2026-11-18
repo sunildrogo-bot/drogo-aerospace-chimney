@@ -19,6 +19,8 @@ def create_app(db_url: str | None = None) -> Flask:
     default_db = f"sqlite:///{os.path.join(base_dir, 'instance', 'nova.db')}"
     app.config['SQLALCHEMY_DATABASE_URI'] = db_url or os.environ.get('DATABASE_URL', default_db)
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    # A bounded limit with a clear HTTP 413 for very large asset requests.
+    app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('CHIMNEY_MAX_UPLOAD_BYTES', str(8 * 1024 ** 3)))
 
     # ── Extensions ────────────────────────────────────────────────────────────
     from models import db, ActivityLog
@@ -123,6 +125,12 @@ def create_app(db_url: str | None = None) -> Flask:
 
     # ── Routes ────────────────────────────────────────────────────────────────
     import users as user_store
+
+    @app.before_request
+    def _hide_internal_chimney_jobs():
+        if request.path.startswith('/uploads/chimney_tiles/_upload_jobs/') or request.path.startswith('/static/uploads/chimney_tiles/_upload_jobs/'):
+            from flask import abort
+            return abort(404)
 
     @app.route('/uploads/<path:filename>')
     def serve_upload(filename):

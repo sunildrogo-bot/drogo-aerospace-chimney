@@ -26,6 +26,11 @@ from werkzeug.utils import secure_filename
 
 from models import db, ChimneyProject, ChimneyDefect, ChimneyProjectAccess, ActivityLog, User
 import settings as app_settings
+from chimney_asset_storage import (AssetUploadError, store_uploads as store_chimney_assets,
+                                  inventory as chimney_asset_inventory)
+from chimney_upload_jobs import (UploadJobError, new_job as new_upload_job,
+     list_jobs as list_upload_jobs, append_chunk as append_upload_chunk,
+     summary as upload_job_summary)
 
 chimney_bp = Blueprint('chimney_bp', __name__)
 
@@ -236,7 +241,7 @@ def api_list_chimney_projects():
     allowed_ids = _visible_chimney_project_ids()
     if allowed_ids is not None:
         projects = [p for p in projects if p.id in allowed_ids]
-    return jsonify({'projects': [p.to_dict() for p in projects]})
+    return jsonify({'projects': [dict(p.to_dict(), upload_status=upload_job_summary(current_app.static_folder, p.id)) for p in projects]})
 
 
 @chimney_bp.route('/api/chimney-projects', methods=['POST'])
@@ -375,48 +380,110 @@ def api_delete_chimney_project(chimney_id):
 
 # ── 3D tileset upload (.3tz / .zip) ───────────────────────────────────────────
 
+# ── Non-destructive Chimney asset uploads and persistent processing queue ──────
+
+@chimney_bp.route('/api/chimney-projects/<int:chimney_id>/assets', methods=['GET', 'POST'])
+def api_chimney_assets(chimney_id):
+    guard = _admin_guard() if request.method == 'POST' else _login_guard()
+    if guard:
+        return guard
+    project = ChimneyProject.query.get_or_404(chimney_id)
+    access = _chimney_project_access_guard(project)
+    if access:
+        return access
+    if request.method == 'GET':
+        info = chimney_asset_inventory(current_app.static_folder, project.id, project.tileset_path or '')
+        info['jobs'] = list_upload_jobs(current_app.static_folder, project.id)
+        return jsonify(info)
+    # Legacy multipart route: still supported non-destructively. New UI uses
+    # the chunked background endpoints below to avoid worker timeouts.
+    return _save_project_assets(project, request.files.getlist('files'))
+
+
+def _save_project_assets(project, files, require_model=False):
+    try:
+        result = store_chimney_assets(current_app.static_folder, project.id, files,
+                                      require_model=require_model)
+    except AssetUploadError as exc:
+        return jsonify({'error': str(exc)}), exc.status
+    except OSError:
+        current_app.logger.exception('Filesystem error saving Chimney assets')
+        return jsonify({'error': 'Could not store new files. Check disk space and volume permissions. Existing files untouched.'}), 507
+    activated = False
+    if result['model_path'] and not project.tileset_path:
+        try:
+            project.tileset_path = result['model_path']
+            db.session.commit()
+            activated = True
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception('Could not activate uploaded Chimney model')
+            return jsonify({'error': 'File saved but model activation failed. No files were deleted.'}), 500
+    response = chimney_asset_inventory(current_app.static_folder, project.id, project.tileset_path or '')
+    response['model_activated'] = activated
+    response['new_bundle_id'] = result['bundle_id']
+    return jsonify(response), 201
+
+
+@chimney_bp.route('/api/chimney-projects/<int:chimney_id>/assets/jobs', methods=['GET', 'POST'])
+def api_chimney_upload_jobs(chimney_id):
+    guard = _admin_guard() if request.method == 'POST' else _login_guard()
+    if guard:
+        return guard
+    project = ChimneyProject.query.get_or_404(chimney_id)
+    access = _chimney_project_access_guard(project)
+    if access:
+        return access
+    if request.method == 'GET':
+        return jsonify({'jobs': list_upload_jobs(current_app.static_folder, project.id)})
+    payload = request.get_json(silent=True) or {}
+    try:
+        job = new_upload_job(current_app.static_folder, project.id,
+                             payload.get('filename'), payload.get('size'), session.get('user_id'))
+    except UploadJobError as exc:
+        return jsonify({'error': str(exc)}), exc.status
+    except OSError:
+        current_app.logger.exception('Could not start Chimney upload')
+        return jsonify({'error': 'Could not start upload. Check disk space and persistent volume permissions.'}), 507
+    return jsonify(job), 201
+
+
+@chimney_bp.route('/api/chimney-projects/<int:chimney_id>/assets/jobs/<job_id>/chunk', methods=['POST'])
+def api_chimney_upload_chunk(chimney_id, job_id):
+    guard = _admin_guard()
+    if guard:
+        return guard
+    project = ChimneyProject.query.get_or_404(chimney_id)
+    access = _chimney_project_access_guard(project)
+    if access:
+        return access
+    if request.content_length is None or request.content_length > 8 * 1024 * 1024:
+        return jsonify({'error': 'Chunk must be at most 8 MiB.'}), 413
+    try:
+        state = append_upload_chunk(current_app.static_folder, project.id, job_id,
+                                    request.headers.get('X-Upload-Offset'), request.get_data(cache=False))
+    except UploadJobError as exc:
+        return jsonify({'error': str(exc)}), exc.status
+    except OSError:
+        current_app.logger.exception('Could not write Chimney upload chunk')
+        return jsonify({'error': 'Could not save upload chunk. Check persistent storage.'}), 507
+    return jsonify(state)
+
+
+# Keep the existing endpoint safe for anyone who still has the old page open.
+# Unlike before, it never deletes existing tilesets even if validation fails.
 @chimney_bp.route('/api/chimney-projects/<int:chimney_id>/tileset', methods=['POST'])
 def api_upload_tileset(chimney_id):
     guard = _admin_guard()
     if guard:
         return guard
     project = ChimneyProject.query.get_or_404(chimney_id)
-
-    file = request.files.get('tileset_file')
-    if not file or not file.filename:
-        return jsonify({'error': 'No file uploaded.'}), 400
-    if not _ext_ok(file.filename, TILESET_EXTS):
-        return jsonify({'error': 'File must be a .3tz or .zip archive containing tileset.json.'}), 400
-
-    dest_dir = os.path.join(current_app.root_path, 'static', TILES_SUBDIR, str(project.id))
-    # Wipe any previous model for this chimney before extracting the new one.
-    shutil.rmtree(dest_dir, ignore_errors=True)
-    os.makedirs(dest_dir, exist_ok=True)
-
-    with tempfile.NamedTemporaryFile(suffix=secure_filename(file.filename), delete=False) as tmp:
-        tmp_path = tmp.name
-        file.save(tmp_path)
-
-    try:
-        if not zipfile.is_zipfile(tmp_path):
-            return jsonify({'error': 'That file is not a valid .3tz/.zip archive.'}), 400
-        with zipfile.ZipFile(tmp_path) as zf:
-            zf.extractall(dest_dir)
-    except zipfile.BadZipFile:
-        return jsonify({'error': 'Could not read the archive — it may be corrupted.'}), 400
-    finally:
-        os.remove(tmp_path)
-
-    tileset_json = _find_tileset_json(dest_dir)
-    if not tileset_json:
-        shutil.rmtree(dest_dir, ignore_errors=True)
-        return jsonify({'error': 'No tileset.json found inside that archive.'}), 400
-
-    rel_path = os.path.relpath(tileset_json, os.path.join(current_app.root_path, 'static'))
-    project.tileset_path = rel_path.replace(os.sep, '/')
-    db.session.commit()
-
-    return jsonify(project.to_dict()), 201
+    upload_file = request.files.get('tileset_file')
+    if not upload_file or not upload_file.filename:
+        return jsonify({'error': 'No model file uploaded.'}), 400
+    if not _ext_ok(upload_file.filename, TILESET_EXTS):
+        return jsonify({'error': 'Model must be a 3TZ or ZIP archive.'}), 400
+    return _save_project_assets(project, [upload_file], require_model=True)
 
 
 @chimney_bp.route('/api/chimney-projects/<int:chimney_id>/model-center', methods=['POST'])
