@@ -1,10 +1,43 @@
-/* Compact Project Files strip. Original Chimney viewer layout stays intact.
+/* Project files live in a compact Manage Files menu above the 3D viewer.
    Files are uploaded in resumable chunks and processed by a separate worker.
    All authorized sessions poll the same server-side job status. */
 (function () {
   'use strict';
   const root = document.getElementById('chim-assets');
   if (!root) return;
+  const dropdown = document.getElementById('chim-files-dropdown');
+  const menu = document.getElementById('chim-files-menu');
+  const toggle = document.getElementById('chim-files-toggle');
+  const indicator = document.getElementById('chim-files-indicator');
+  function closeFilesMenu() {
+    if (menu) menu.hidden = true;
+    if (dropdown) dropdown.classList.remove('open');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  }
+  window.closeChimneyFilesMenu = closeFilesMenu;
+  window.toggleChimneyFilesMenu = function (event) {
+    if (event) event.stopPropagation();
+    if (!dropdown || !menu) return;
+    const opening = menu.hidden;
+    menu.hidden = !opening;
+    dropdown.classList.toggle('open', opening);
+    if (toggle) toggle.setAttribute('aria-expanded', String(opening));
+    if (opening) {
+      document.getElementById('map-style-menu')?.classList.remove('open');
+      document.getElementById('map-style-dropdown')?.classList.remove('open');
+      document.getElementById('map-style-toggle')?.setAttribute('aria-expanded', 'false');
+      refresh();
+    }
+  };
+  document.addEventListener('click', event => {
+    if (dropdown?.classList.contains('open') && !dropdown.contains(event.target)) closeFilesMenu();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && dropdown?.classList.contains('open')) {
+      closeFilesMenu();
+      toggle?.focus();
+    }
+  });
   const pid = window.CHIM_PROJECT_ID;
   const api = `/api/chimney-projects/${encodeURIComponent(pid)}/assets`;
   const input = document.getElementById('chim-assets-input');
@@ -65,8 +98,17 @@
       list.append(chip);
     });
     const jobs = data.jobs || [];
+    const activeJob = jobs.find(j => ['uploading','queued','processing'].includes(j.state));
+    const failedJob = jobs.find(j => j.state === 'failed');
+    if (indicator) {
+      indicator.hidden = !activeJob && !failedJob;
+      indicator.textContent = failedJob && !activeJob ? '!' : '●';
+      indicator.classList.toggle('error', !activeJob && !!failedJob);
+      indicator.title = activeJob ? 'File transfer or processing in progress'
+        : failedJob ? 'A recent file upload failed; open Manage Files for details.' : '';
+    }
     if (!busy) {
-      const active = jobs.find(j => ['uploading','queued','processing'].includes(j.state));
+      const active = activeJob;
       if (active) {
         const pct = active.size ? Math.round(100 * active.received / active.size) : 0;
         progress.hidden = false;
@@ -76,7 +118,7 @@
           : `${active.filename} — ${active.state === 'queued' ? 'Queued' : 'Processing on server'}. You may leave; other users see this status.`);
       } else {
         progress.hidden = true;
-        const failed = jobs.find(j => j.state === 'failed');
+        const failed = failedJob;
         if (failed) message(`${failed.filename}: ${failed.error || 'Processing failed. Existing files safe.'}`, true);
         else if (jobs[0] && jobs[0].state === 'completed') message(`${jobs[0].filename} — processed successfully on server.`);
         else message('');
