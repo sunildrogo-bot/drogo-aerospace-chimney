@@ -127,10 +127,51 @@ def create_app(db_url: str | None = None) -> Flask:
     import users as user_store
 
     @app.before_request
-    def _hide_internal_chimney_jobs():
-        if request.path.startswith('/uploads/chimney_tiles/_upload_jobs/') or request.path.startswith('/static/uploads/chimney_tiles/_upload_jobs/'):
-            from flask import abort
-            return abort(404)
+    def _authorize_chimney_upload_request():
+        """Guard both Flask's /static/uploads and our cached /uploads route.
+
+        Do not alter unrelated app uploads. Keep internal worker files private.
+        File requests from Cesium use the same signed session cookie.
+        """
+        from flask import abort
+        from chimney_security import asset_scope
+        scope = asset_scope(request.path)
+        if scope is None:
+            return None
+        if scope[0] == 'deny':
+            abort(404)
+        if 'user_id' not in session:
+            abort(401)
+        from models import ChimneyProject, User
+        if scope[0] == 'project':
+            project = ChimneyProject.query.get(scope[1])
+        else:
+            field, path = scope[1], scope[2]
+            # Support both historical relative-path conventions.
+            project = ChimneyProject.query.filter_by(**{field: path}).first()
+            if project is None:
+                project = ChimneyProject.query.filter_by(**{field: path[len('uploads/') :]}).first()
+        if project is None:
+            abort(404)
+        if session.get('role') != 'Admin':
+            user = User.query.get(session['user_id'])
+            if user is None:
+                abort(403)
+            restricted = user.restricted_chimney_project_ids()
+            if restricted is not None and project.id not in restricted:
+                abort(403)
+
+    @app.after_request
+    def _private_chimney_asset_cache(response):
+        from chimney_security import asset_scope
+        if asset_scope(request.path) is not None:
+            # Never cache protected project files in shared intermediary caches.
+            response.headers['Cache-Control'] = (
+                'private, max-age=3600' if response.status_code == 200 else 'no-store'
+            )
+            response.vary.add('Cookie')
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+        return response
 
     @app.route('/uploads/<path:filename>')
     def serve_upload(filename):

@@ -26,6 +26,7 @@ from werkzeug.utils import secure_filename
 
 from models import db, ChimneyProject, ChimneyDefect, ChimneyProjectAccess, ActivityLog, User
 import settings as app_settings
+from chimney_security import PhotoUploadError, store_verified_photo
 from chimney_asset_storage import (AssetUploadError, store_uploads as store_chimney_assets,
                                   inventory as chimney_asset_inventory)
 from chimney_upload_jobs import (UploadJobError, new_job as new_upload_job,
@@ -79,6 +80,26 @@ def _chimney_project_access_guard(project):
     if allowed_ids is not None and project.id not in allowed_ids:
         return jsonify({'error': "You don't have access to this project."}), 403
     return None
+
+
+@chimney_bp.before_request
+def _enforce_chimney_project_scope():
+    """Cover every project/defect API, not just page views and asset uploads.
+
+    Existing client assignment rules are preserved for compatibility.
+    Individual routes still enforce login and Admin edit rights.
+    """
+    if 'user_id' not in session:
+        return None
+    values = request.view_args or {}
+    if 'chimney_id' in values:
+        project = ChimneyProject.query.get_or_404(values['chimney_id'])
+    elif 'defect_id' in values:
+        defect = ChimneyDefect.query.get_or_404(values['defect_id'])
+        project = ChimneyProject.query.get_or_404(defect.chimney_project_id)
+    else:
+        return None
+    return _chimney_project_access_guard(project)
 
 
 def _ext_ok(filename, allowed):
@@ -283,10 +304,13 @@ def api_create_chimney_project():
             return jsonify({'error': 'Client logo must be a .jpg or .png file.'}), 400
         dest_dir = os.path.join(current_app.root_path, 'static', 'uploads', 'chimney_client_logos')
         os.makedirs(dest_dir, exist_ok=True)
-        safe_name = secure_filename(logo_file.filename)
-        unique_name = f"{uuid.uuid4().hex[:10]}_{safe_name}"
-        dest_path = os.path.join(dest_dir, unique_name)
-        logo_file.save(dest_path)
+        try:
+            dest_path = store_verified_photo(logo_file, dest_dir, 'client_logo')
+        except PhotoUploadError as exc:
+            return jsonify({'error': str(exc)}), exc.status
+        except OSError:
+            current_app.logger.exception('Failed to save Chimney client logo')
+            return jsonify({'error': 'Could not safely save client logo.'}), 507
         client_logo_path = os.path.relpath(dest_path, os.path.join(current_app.root_path, 'static'))
 
     project = ChimneyProject(
@@ -552,15 +576,24 @@ def api_save_cover_snapshot(chimney_id):
     if not file or not file.filename:
         return jsonify({'error': 'No snapshot file uploaded.'}), 400
 
+    if project.cover_snapshot_path:
+        return jsonify({'saved': True, 'existing': True}), 200
     dest_dir = os.path.join(current_app.root_path, 'static', 'uploads', 'chimney_covers')
-    os.makedirs(dest_dir, exist_ok=True)
-    filename = f'cover_{project.id}.jpg'
-    dest_path = os.path.join(dest_dir, filename)
-    file.save(dest_path)
-
+    try:
+        dest_path = store_verified_photo(file, dest_dir, f'cover_{project.id}')
+    except PhotoUploadError as exc:
+        return jsonify({'error': str(exc)}), exc.status
+    except OSError:
+        current_app.logger.exception('Failed to save Chimney cover snapshot')
+        return jsonify({'error': 'Could not safely save cover snapshot.'}), 507
     rel_path = os.path.relpath(dest_path, os.path.join(current_app.root_path, 'static'))
     project.cover_snapshot_path = rel_path.replace(os.sep, '/')
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception('Failed to record Chimney cover snapshot')
+        return jsonify({'error': 'Snapshot saved but could not be activated; previous data retained.'}), 500
     return jsonify({'saved': True}), 201
 
 
@@ -814,21 +847,14 @@ def api_close_defect(defect_id):
         return jsonify({'error': 'A rectification photo is required to close a finding.'}), 400
 
     dest_dir = os.path.join(current_app.root_path, 'static', DEFECT_RECTIFIED_SUBDIR, str(defect.chimney_project_id))
-    os.makedirs(dest_dir, exist_ok=True)
-
-    # Replace any previous rectification photo for this finding (e.g. it
-    # was reopened and is being closed again).
-    if defect.rectified_image_path:
-        old_path = os.path.join(current_app.root_path, 'static', defect.rectified_image_path)
-        if os.path.exists(old_path):
-            try:
-                os.remove(old_path)
-            except OSError:
-                pass
-
-    filename = f'rectified_{defect.id}.jpg'
-    dest_path = os.path.join(dest_dir, filename)
-    file.save(dest_path)
+    # Never delete the previously accepted rectification evidence first.
+    try:
+        dest_path = store_verified_photo(file, dest_dir, f'rectified_{defect.id}')
+    except PhotoUploadError as exc:
+        return jsonify({'error': str(exc)}), exc.status
+    except OSError:
+        current_app.logger.exception('Failed to save rectification photo')
+        return jsonify({'error': 'Could not safely save rectification photo.'}), 507
 
     rel_path = os.path.relpath(dest_path, os.path.join(current_app.root_path, 'static'))
     defect.rectified_image_path = rel_path.replace(os.sep, '/')
@@ -840,7 +866,12 @@ def api_close_defect(defect_id):
     if notes:
         defect.notes = (defect.notes + '\n\n' if defect.notes else '') + f'[Rectification note] {notes}'
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception('Failed to record rectification evidence')
+        return jsonify({'error': 'Photo preserved, but finding status could not be updated.'}), 500
     return jsonify(defect.to_dict()), 201
 
 
@@ -878,20 +909,14 @@ def api_upload_defect_image(defect_id):
         return jsonify({'error': 'No image uploaded.'}), 400
 
     dest_dir = os.path.join(current_app.root_path, 'static', DEFECT_IMG_SUBDIR, str(defect.chimney_project_id))
-    os.makedirs(dest_dir, exist_ok=True)
-
-    # Remove any previous snapshot for this defect first.
-    if defect.image_path:
-        old_path = os.path.join(current_app.root_path, 'static', defect.image_path)
-        if os.path.exists(old_path):
-            try:
-                os.remove(old_path)
-            except OSError:
-                pass
-
-    filename = f'defect_{defect.id}.jpg'
-    dest_path = os.path.join(dest_dir, filename)
-    file.save(dest_path)
+    # Publish a fresh verified photo under a unique filename; retain the old.
+    try:
+        dest_path = store_verified_photo(file, dest_dir, f'defect_{defect.id}')
+    except PhotoUploadError as exc:
+        return jsonify({'error': str(exc)}), exc.status
+    except OSError:
+        current_app.logger.exception('Failed to save Chimney finding photo')
+        return jsonify({'error': 'Could not safely save finding photo.'}), 507
 
     rel_path = os.path.relpath(dest_path, os.path.join(current_app.root_path, 'static'))
     defect.image_path = rel_path.replace(os.sep, '/')
@@ -912,7 +937,12 @@ def api_upload_defect_image(defect_id):
     except (TypeError, ValueError):
         pass  # malformed pose data — keep the image, just skip the pose
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception('Failed to record Chimney finding photo')
+        return jsonify({'error': 'Photo preserved, but finding record could not be updated.'}), 500
 
     return jsonify({'image_url': f'/static/{defect.image_path}'}), 201
 
@@ -930,8 +960,13 @@ def api_download_defect_image(defect_id):
     if not os.path.exists(full_path):
         return jsonify({'error': 'Saved image file is missing on the server.'}), 404
     safe_title = ''.join(c for c in (defect.title or 'defect') if c.isalnum() or c in ' _-').strip().replace(' ', '_')[:40]
-    download_name = f'defect_{defect.id}_{safe_title or "image"}.jpg'
-    return send_file(full_path, as_attachment=True, download_name=download_name, mimetype='image/jpeg')
+    import mimetypes
+    extension = os.path.splitext(full_path)[1].lower()
+    if extension not in ('.jpg', '.jpeg', '.png', '.webp'):
+        extension = '.jpg'
+    download_name = f'defect_{defect.id}_{safe_title or "image"}{extension}'
+    mimetype = mimetypes.guess_type(download_name)[0] or 'application/octet-stream'
+    return send_file(full_path, as_attachment=True, download_name=download_name, mimetype=mimetype)
 
 
 # ── KML defect overlay upload ──────────────────────────────────────────────────
