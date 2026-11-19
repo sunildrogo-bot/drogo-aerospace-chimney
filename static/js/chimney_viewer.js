@@ -151,93 +151,100 @@ const COMPASS_16 = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WS
 
 function buildCompassTicks() {
   const ring = document.getElementById('chim-compass-ring');
-  if (!ring || ring.dataset.built) return;
-  ring.dataset.built = '1';
-  const size = ring.offsetWidth || 118;
+  if (!ring) return;
+  const size = ring.offsetWidth || 88;
+  if (ring.dataset.compassSize === String(size)) return;
+  ring.dataset.compassSize = String(size);
+  ring.replaceChildren();
   const center = size / 2;
-  const R = size * 0.37;
-  const dirs = [
-    [0, 'N', true], [22.5, 'NNE', false], [45, 'NE', true], [67.5, 'ENE', false],
-    [90, 'E', true], [112.5, 'ESE', false], [135, 'SE', true], [157.5, 'SSE', false],
-    [180, 'S', true], [202.5, 'SSW', false], [225, 'SW', true], [247.5, 'WSW', false],
-    [270, 'W', true], [292.5, 'WNW', false], [315, 'NW', true], [337.5, 'NNW', false],
-  ];
-  dirs.forEach(([bearing, label, major]) => {
+  const radius = size * 0.36;
+  // Cardinal labels remain legible; the readout reports all 16 headings.
+  for (let i = 0; i < 16; i++) {
+    const bearing = i * 22.5;
     const rad = bearing * Math.PI / 180;
-    const x = center + R * Math.sin(rad);
-    const y = center - R * Math.cos(rad);
-    const el = document.createElement('div');
-    el.className = 'chim-compass-tick' + (major ? ' major' : '');
-    el.textContent = label;
-    el.style.left = x + 'px';
-    el.style.top = y + 'px';
-    el.style.transform = 'translate(-50%,-50%)';
-    ring.appendChild(el);
-  });
+    const tick = document.createElement('span');
+    const major = i % 4 === 0;
+    tick.className = 'chim-compass-tick' + (major ? ' major' : '');
+    tick.textContent = major ? COMPASS_16[i] : (i % 2 === 0 ? '•' : '·');
+    tick.style.left = (center + radius * Math.sin(rad)) + 'px';
+    tick.style.top = (center - radius * Math.cos(rad)) + 'px';
+    tick.style.transform = 'translate(-50%,-50%)';
+    ring.appendChild(tick);
+  }
 }
 
-// Position the compass just under the toolbar row (navbar + infobar,
-// which contains Generate Report) rather than a guessed pixel offset —
-// that row wraps onto two lines at narrow widths, so its real rendered
-// height is read directly instead of hardcoding a value that would drift
-// out of sync with it. Also shifts left of the findings panel whenever
-// it's open, since that panel sits on the right edge and would otherwise
-// sit underneath (and visually collide with) the compass.
-// Hides the compass while a popup that would otherwise sit underneath/
-// collide with it is open (the add-finding form, primarily) — restored
-// whenever that popup closes.
-function setCompassVisible(visible) {
-  const compass = document.getElementById('chim-compass');
-  if (compass) compass.style.display = visible ? '' : 'none';
-}
-
-// Position the compass just under the toolbar row (navbar + infobar,
-// which contains Generate Report) rather than a guessed pixel offset —
-// that row wraps onto two lines at narrow widths, so its real rendered
-// height is read directly instead of hardcoding a value that would drift
-// out of sync with it. Also shifts left of whichever right-side overlay
-// (the findings panel, or the add/edit-defect form popup) is currently
-// open, since either would otherwise sit underneath — and visually
-// collide with — the compass. Checked by actual rendered position rather
-// than assuming a particular open/close mechanism, since the two panels
-// use different ones (display toggle vs. a CSS slide-in transform).
+// Float over the unobstructed model canvas, not over the defect list/form.
 function positionCompass() {
   const compass = document.getElementById('chim-compass');
-  const infobar = document.querySelector('.chim-infobar');
-  if (!compass || !infobar) return;
-  compass.style.top = (infobar.getBoundingClientRect().bottom + 14) + 'px';
-
-  let rightOffset = 22;
-  ['chim-toolbar-panel', 'defect-form'].forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
+  const stage = document.querySelector('.chim-stage');
+  if (!compass || !stage) return;
+  const bounds = stage.getBoundingClientRect();
+  const width = compass.offsetWidth || 88;
+  const height = (compass.offsetHeight || 88) + 29; // readout included
+  const gap = 12;
+  const visibleRect = el => {
+    if (!el || getComputedStyle(el).display === 'none') return null;
     const rect = el.getBoundingClientRect();
-    // A closed panel is either display:none (zero-width rect) or slid
-    // off-screen via a transform (its left edge is at/past the viewport
-    // edge) — only count it if it's actually visible on screen.
-    if (rect.width > 0 && rect.left < window.innerWidth) {
-      rightOffset = Math.max(rightOffset, (window.innerWidth - rect.left) + 22);
-    }
+    return rect.width > 0 && rect.height > 0 && rect.right > bounds.left
+      && rect.left < bounds.right && rect.bottom > bounds.top
+      && rect.top < bounds.bottom ? rect : null;
+  };
+  let usableRight = bounds.right;
+  ['chim-toolbar-panel', 'defect-form'].forEach(id => {
+    const rect = visibleRect(document.getElementById(id));
+    if (rect && rect.right >= bounds.right - gap)
+      usableRight = Math.min(usableRight, rect.left);
   });
-  compass.style.right = rightOffset + 'px';
+  const obstacles = ['chim-toolbar', 'draw-toolbar', 'hint-toast', 'measure-readout']
+    .map(id => visibleRect(document.getElementById(id))).filter(Boolean);
+  const fullscreen = visibleRect(stage.querySelector('.cesium-viewer-fullscreenContainer'));
+  if (fullscreen) obstacles.push(fullscreen);
+  const left = bounds.left + gap;
+  const right = usableRight - width - gap;
+  const top = bounds.top + gap;
+  const bottom = bounds.bottom - height - gap;
+  const toolbar = visibleRect(document.getElementById('chim-toolbar'));
+  const belowToolbar = toolbar ? toolbar.bottom + gap : top;
+  const positions = [
+    [right, top], [right, belowToolbar], [right, bottom],
+    [left, top], [left, belowToolbar], [left, bottom]
+  ];
+  const overlaps = (x,y,r) => x < r.right+6 && x+width > r.left-6
+    && y < r.bottom+6 && y+height > r.top-6;
+  const choice = positions.find(([x,y]) =>
+    x >= left && x <= right && y >= top && y <= bottom
+    && obstacles.every(r => !overlaps(x,y,r)));
+  // Narrow devices may have no free space while a form is open.
+  compass.hidden = !choice;
+  if (!choice) return;
+  compass.style.left = Math.round(choice[0] - bounds.left) + 'px';
+  compass.style.top = Math.round(choice[1] - bounds.top) + 'px';
+  compass.style.right = 'auto';
 }
 
-// Catches the compass overlap regardless of which code path opened or
-// closed either panel — rather than needing every current and future
-// open/close call site to remember to call positionCompass() itself.
+// Existing form handlers still call this; visibility is geometry-driven.
+function setCompassVisible() { positionCompass(); }
+
 function watchCompassOverlapPanels() {
-  const targets = ['chim-toolbar-panel', 'defect-form']
-    .map(id => document.getElementById(id))
-    .filter(Boolean);
-  if (!targets.length) return;
+  const ids = ['chim-toolbar-panel','defect-form','chim-toolbar',
+               'draw-toolbar','hint-toast','measure-readout'];
   const observer = new MutationObserver(() => {
     positionCompass();
-    // .defect-form slides in via a CSS transition rather than an instant
-    // display toggle — its bounding rect right when the class changes is
-    // still mid-animation, so reposition again once that settles.
-    setTimeout(positionCompass, 260);
+    setTimeout(positionCompass, 280); // after sliding form transition
   });
-  targets.forEach(el => observer.observe(el, { attributes: true, attributeFilter: ['class', 'style'] }));
+  ids.map(id => document.getElementById(id)).filter(Boolean).forEach(el => {
+    observer.observe(el,{attributes:true,attributeFilter:['class','style']});
+  });
+  if ('ResizeObserver' in window) {
+    const resize = new ResizeObserver(() => {
+      buildCompassTicks();
+      positionCompass();
+    });
+    const stage = document.querySelector('.chim-stage');
+    const compass = document.getElementById('chim-compass');
+    if (stage) resize.observe(stage);
+    if (compass) resize.observe(compass);
+  }
 }
 
 let _lastStableCompassDeg = 0;
@@ -280,7 +287,10 @@ function updateCompass() {
   }
   needle.style.transform = `rotate(${norm}deg)`;
   const idx = Math.round(norm / 22.5) % 16;
-  readout.textContent = `${COMPASS_16[idx]} · ${Math.round(norm)}°`;
+  const rounded = Math.round(norm) % 360;
+  const held = horizMag <= 0.02;
+  readout.textContent = `${COMPASS_16[idx]} · ${rounded}°${held ? ' (held)' : ''}`;
+  readout.title = held ? 'Last stable camera heading; vertical view has no horizontal bearing.' : 'Camera view direction';
 }
 
 function startResilientRenderLoop() {
@@ -320,7 +330,7 @@ async function initViewer() {
   buildCompassTicks();
   positionCompass();
   watchCompassOverlapPanels();
-  window.addEventListener('resize', positionCompass);
+  window.addEventListener('resize', () => { buildCompassTicks(); positionCompass(); });
 
   chimViewer = new Cesium.Viewer('cesiumContainer', {
     imageryProvider: false, baseLayerPicker: false, geocoder: false,
@@ -1205,6 +1215,7 @@ function _updateMapStyleButtons() {
   });
   const label = document.getElementById('map-style-current');
   if (label) label.textContent = MS_LABELS[currentMapStyle] || 'Dark';
+  positionCompass();
 }
 
 function _closeMapStyleMenu() {
@@ -1212,6 +1223,7 @@ function _closeMapStyleMenu() {
   const menu = document.getElementById('map-style-menu');
   if (menu) menu.classList.remove('open');
   if (dropdown) dropdown.classList.remove('open');
+  document.getElementById('map-style-toggle')?.setAttribute('aria-expanded', 'false');
 }
 
 function toggleMapStyleMenu(ev) {
@@ -1222,14 +1234,22 @@ function toggleMapStyleMenu(ev) {
   const opening = !menu.classList.contains('open');
   menu.classList.toggle('open', opening);
   dropdown.classList.toggle('open', opening);
+  document.getElementById('map-style-toggle')?.setAttribute('aria-expanded', String(opening));
+  if (opening && window.closeChimneyFilesMenu) window.closeChimneyFilesMenu();
 }
 
 document.addEventListener('click', (e) => {
   const dropdown = document.getElementById('map-style-dropdown');
   const menu = document.getElementById('map-style-menu');
   if (dropdown && menu && menu.classList.contains('open') && !dropdown.contains(e.target)) {
-    menu.classList.remove('open');
-    dropdown.classList.remove('open');
+    _closeMapStyleMenu();
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('map-style-dropdown')?.classList.contains('open')) {
+    _closeMapStyleMenu();
+    document.getElementById('map-style-toggle')?.focus();
   }
 });
 
@@ -2542,9 +2562,9 @@ function chimToggleMeasureMode() {
   chimDefectMode  = false;
   cancelDrawTool();
   document.getElementById('btn-measure').classList.toggle('active', chimMeasureMode);
-  document.getElementById('btn-add-defect').classList.remove('active');
+  document.getElementById('btn-add-defect')?.classList.remove('active');
   clearMeasurement();
-  if (chimMeasureMode) showHint('Click two points on the model to measure the distance between them.');
+  if (chimMeasureMode) showHint('Click two points to measure their straight-line 3D distance.');
   else hideHint();
 }
 
@@ -2574,7 +2594,7 @@ function handleMeasurePick(screenPos) {
         clampToGround: false },
     }));
     const readout = document.getElementById('measure-readout');
-    readout.textContent = `Distance: ${dist.toFixed(2)} m`;
+    readout.textContent = `Straight-line: ${dist.toFixed(2)} m`;
     readout.classList.add('open');
     showHint('Click again to start a new measurement.', 2000);
   }
