@@ -370,13 +370,6 @@ async function initViewer() {
   chimViewer.scene.requestRenderMode = true;
   chimViewer.scene.maximumRenderTimeChange = Infinity;
 
-  // Remove the Cesium ion credit/watermark from the viewport entirely.
-  if (chimViewer.cesiumWidget && chimViewer.cesiumWidget.creditContainer) {
-    chimViewer.cesiumWidget.creditContainer.style.display = 'none';
-  }
-  const creditEl = chimViewer.container.querySelector('.cesium-viewer-bottom, .cesium-credit-lightbox-overlay');
-  if (creditEl) creditEl.style.display = 'none';
-
   // Belt-and-braces: some Cesium internals call showErrorPanel() directly
   // (not just the default render loop), which would still throw up the big
   // red overlay even with useDefaultRenderLoop off. Make it a no-op and
@@ -1215,6 +1208,8 @@ function _updateMapStyleButtons() {
   });
   const label = document.getElementById('map-style-current');
   if (label) label.textContent = MS_LABELS[currentMapStyle] || 'Dark';
+  const osmCredit = document.getElementById('chim-map-attribution');
+  if (osmCredit) osmCredit.hidden = currentMapStyle !== 'osm';
   positionCompass();
 }
 
@@ -2544,7 +2539,18 @@ async function generateChimneyReport() {
     }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
-    window.open(url, '_blank');
+    const tab = window.open(url, '_blank');
+    if (!tab) {
+      // Some browsers block tabs opened after an asynchronous request.
+      // Fall back to a normal download instead of losing the report.
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'chimney-inspection-report.pdf';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      showHint('The browser blocked a new tab, so your PDF was downloaded.', 3500);
+    }
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   } catch (e) {
     console.error('Report generation error:', e);
