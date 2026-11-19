@@ -96,3 +96,8 @@ def store_verified_photo(upload, dest_dir, name_prefix):
         return published
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def has_chimney_module(role, modules):
+    """Admin always has access; other users require the inspection module."""
+    return role == 'Admin' or '3D Inspection' in (modules or [])

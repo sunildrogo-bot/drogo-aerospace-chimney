@@ -134,7 +134,7 @@ def create_app(db_url: str | None = None) -> Flask:
         File requests from Cesium use the same signed session cookie.
         """
         from flask import abort
-        from chimney_security import asset_scope
+        from chimney_security import asset_scope, has_chimney_module
         scope = asset_scope(request.path)
         if scope is None:
             return None
@@ -153,6 +153,8 @@ def create_app(db_url: str | None = None) -> Flask:
                 project = ChimneyProject.query.filter_by(**{field: path[len('uploads/') :]}).first()
         if project is None:
             abort(404)
+        if not has_chimney_module(session.get('role'), session.get('modules', [])):
+            abort(403)
         if session.get('role') != 'Admin':
             user = User.query.get(session['user_id'])
             if user is None:
@@ -175,14 +177,10 @@ def create_app(db_url: str | None = None) -> Flask:
 
     @app.route('/uploads/<path:filename>')
     def serve_upload(filename):
-        # Uploaded files (3D tilesets, defect photos, rectification photos,
-        # announcement images, PDFs) never change once created — a fresh
-        # upload always gets a brand new filename/path. So unlike the app's
-        # own /static/js and /static/css (which DO change on every
-        # deployment and must stay uncached), these are safe to cache in
-        # the browser for a full year. This is what makes reopening a
-        # project feel instant instead of re-downloading the whole 3D
-        # model's tile files from the network every single time.
+        # Legacy upload URLs remain available. Authorized Chimney assets
+        # receive PRIVATE cache headers (rather than shared/public caching)
+        # from _private_chimney_asset_cache above. Unrelated modules retain
+        # their original cache behavior.
         from flask import send_from_directory
         uploads_root = os.path.join(app.static_folder, 'uploads')
         return send_from_directory(uploads_root, filename, max_age=31536000)

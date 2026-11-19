@@ -26,7 +26,7 @@ from werkzeug.utils import secure_filename
 
 from models import db, ChimneyProject, ChimneyDefect, ChimneyProjectAccess, ActivityLog, User
 import settings as app_settings
-from chimney_security import PhotoUploadError, store_verified_photo
+from chimney_security import PhotoUploadError, store_verified_photo, has_chimney_module
 from chimney_asset_storage import (AssetUploadError, store_uploads as store_chimney_assets,
                                   inventory as chimney_asset_inventory)
 from chimney_upload_jobs import (UploadJobError, new_job as new_upload_job,
@@ -64,6 +64,8 @@ def _visible_chimney_project_ids():
     specific projects assigned (the backward-compatible default)."""
     if session.get('role') == 'Admin':
         return None
+    if not has_chimney_module(session.get('role'), session.get('modules', [])):
+        return set()
     user = User.query.get(session.get('user_id'))
     if not user:
         return set()

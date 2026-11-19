@@ -7,10 +7,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from PIL import Image
 
-from chimney_security import asset_scope, store_verified_photo, PhotoUploadError
+from chimney_security import asset_scope, store_verified_photo, PhotoUploadError, has_chimney_module
 
 
 class ChimneyAssetAccessTests(unittest.TestCase):
+    def test_non_admin_requires_inspection_module(self):
+        self.assertTrue(has_chimney_module('Admin', []))
+        self.assertTrue(has_chimney_module('Client User', ['3D Inspection']))
+        self.assertFalse(has_chimney_module('Client User', []))
+        self.assertFalse(has_chimney_module('Pilot', ['Land Survey']))
+
     def test_scoped_paths_in_both_url_forms(self):
         for prefix in ('/uploads/', '/static/uploads/'):
             for folder in ('chimney_tiles', 'chimney_defect_images', 'chimney_rectified_images', 'kml'):
