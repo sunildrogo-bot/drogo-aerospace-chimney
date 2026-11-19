@@ -11,6 +11,7 @@ the actual PDF-building code doesn't need to know which kind of project
 it's looking at.
 """
 from io import BytesIO
+from xml.sax.saxutils import escape
 from datetime import datetime
 
 from reportlab.lib import colors
@@ -89,11 +90,12 @@ def _cover_page(story, styles, project_summaries):
 
 
 def _project_section(story, styles, p):
-    story.append(Paragraph(p['name'], styles['ProjectHeading']))
+    story.append(Paragraph(escape(p['name']), styles['ProjectHeading']))
     rows = [['Module', p['module']], ['Total Defects', str(p['total_defects'])]]
     if 'division_count' in p:
-        rows += [['Divisions', str(p['division_count'])], ['Lines', str(p['line_count'])],
-                  ['Towers', str(p['tower_count'])]]
+        rows += [['Divisions', str(p['division_count'])], ['Lines', str(p['line_count'])]]
+    if 'tower_count' in p:
+        rows.append(['Towers', str(p['tower_count'])])
     if 'open_count' in p:
         rows += [['Open', str(p['open_count'])], ['Closed', str(p['closed_count'])]]
     sev = p.get('severity_counts', {})
@@ -101,7 +103,7 @@ def _project_section(story, styles, p):
         rows.append(['Severity', ', '.join(f'{k}: {v}' for k, v in sev.items())])
 
     table = Table(
-        [[Paragraph(f'<b>{k}</b>', styles['CellTextLeft']), Paragraph(str(v), styles['CellTextLeft'])] for k, v in rows],
+        [[Paragraph(f'<b>{k}</b>', styles['CellTextLeft']), Paragraph(escape(str(v)), styles['CellTextLeft'])] for k, v in rows],
         colWidths=[40 * mm, PAGE_W - 28 * mm - 40 * mm],
     )
     table.setStyle(TableStyle([

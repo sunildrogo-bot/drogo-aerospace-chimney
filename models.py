@@ -441,6 +441,16 @@ class ChimneyProject(db.Model):
     defects = db.relationship('ChimneyDefect', backref='chimney_project',
                                cascade='all, delete-orphan', order_by='ChimneyDefect.created_at')
 
+    @classmethod
+    def activate_first_model(cls, project_id, model_path):
+        """Only one completed upload can set the first active model."""
+        updated = cls.query.filter(
+            cls.id == project_id,
+            db.or_(cls.tileset_path.is_(None), cls.tileset_path == ''),
+        ).update({cls.tileset_path: model_path}, synchronize_session=False)
+        db.session.commit()
+        return updated == 1
+
     def direction_reference(self):
         """The lat/lon to measure defect compass directions from.
         Preference order:

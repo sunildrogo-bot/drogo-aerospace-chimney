@@ -4,7 +4,7 @@ assistant_api.py — In-app AI chat assistant.
 Runs as a tool-calling agent against Google's Gemini API (free tier —
 switched from Anthropic's paid API by request). Every tool function below
 queries the database using the SAME permission-filtering functions the
-rest of the app already uses (_visible_project_ids /
+rest of the app already uses (visible_projects /
 _visible_chimney_project_ids, imported directly from projects_routes.py
 and chimney_routes.py rather than reimplemented here) — so a Client User
 with restricted project access gets those same restrictions applied to
@@ -25,8 +25,7 @@ built in for the tradeoff discussion.
 """
 import os
 import json
-from datetime import datetime
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, current_app, request, jsonify, session, send_file, url_for
 
 from models import db, Project, Division, Line, ChimneyProject, ChimneyDefect, User, HelpTicket
 
@@ -57,27 +56,16 @@ def _current_user():
 # the CURRENT session is actually allowed to see, using the app's real
 # permission logic rather than anything reimplemented for the assistant.
 
-def _visible_trans_project_ids(module_name):
-    from projects_routes import _visible_project_ids
-    return _visible_project_ids(module_name)
-
-
 def _visible_chimney_ids():
     from chimney_routes import _visible_chimney_project_ids
     return _visible_chimney_project_ids()
 
 
 def tool_list_projects(module=None):
-    modules = [module] if module else ['Transmission Line', 'Land Survey', 'TRANS']
-    out = []
-    for m in modules:
-        rows = Project.query.filter_by(module=m).all()
-        allowed = _visible_trans_project_ids(m)
-        if allowed is not None:
-            rows = [r for r in rows if r.id in allowed]
-        out.extend([{'id': r.id, 'name': r.name, 'module': r.module, 'state': r.state,
-                      'client_name': r.client_name} for r in rows])
-    return {'projects': out}
+    from projects_routes import visible_projects
+    rows = visible_projects(module).all()
+    return {'projects': [{'id': r.id, 'name': r.name, 'module': r.module, 'state': r.state,
+                          'client_name': r.client_name} for r in rows]}
 
 
 def tool_list_chimney_projects():
@@ -89,17 +77,14 @@ def tool_list_chimney_projects():
 
 
 def _find_project(project_name):
-    rows = Project.query.filter(Project.name.ilike(f'%{project_name}%')).all()
+    from projects_routes import visible_projects
+    rows = visible_projects().filter(Project.name.ilike(f'%{project_name}%')).all()
     if not rows:
         return None, {'error': f'No project found matching "{project_name}".'}
     if len(rows) > 1:
         return None, {'error': 'Multiple projects match that name — please be more specific.',
                        'matches': [r.name for r in rows]}
-    project = rows[0]
-    allowed = _visible_trans_project_ids(project.module)
-    if allowed is not None and project.id not in allowed:
-        return None, {'error': "You don't have access to this project."}
-    return project, None
+    return rows[0], None
 
 
 def tool_get_project_overview(project_name):
@@ -160,18 +145,15 @@ TOOLS = [
      }, 'required': ['subject']}},
 ]
 
-def tool_generate_central_report():
+def _central_report_projects():
     """One combined PDF across every project the current user can see —
     Land Survey (division/line counts only, no defect concept) and 3D
     Inspection (open/closed/severity rollup) — handed to
     central_report.py."""
     out = []
 
-    rows = Project.query.filter_by(module='Land Survey').all()
-    allowed = _visible_trans_project_ids('Land Survey')
-    if allowed is not None:
-        rows = [r for r in rows if r.id in allowed]
-    for project in rows:
+    from projects_routes import visible_projects
+    for project in visible_projects('Land Survey').all():
         division_count = len(project.divisions)
         line_count = sum(len(d.lines) for d in project.divisions)
         out.append({
@@ -198,22 +180,34 @@ def tool_generate_central_report():
             'severity_counts': severity_counts,
         })
 
-    if not out:
+    return out
+
+
+def tool_generate_central_report():
+    if not _is_admin():
+        return {'error': 'Only administrators can generate a combined report.'}
+    projects = _central_report_projects()
+    if not projects:
         return {'error': "You don't have access to any projects to include in a report."}
+    return {'ok': True, 'download_url': url_for('assistant_bp.central_report'),
+            'project_count': len(projects), 'total_defects': sum(p['total_defects'] for p in projects)}
 
+
+@assistant_bp.get('/central-report.pdf')
+def central_report():
+    guard = _login_guard()
+    if guard:
+        return guard
+    if not _is_admin():
+        return jsonify({'error': 'Only administrators can download a combined report.'}), 403
+    projects = _central_report_projects()
+    if not projects:
+        return jsonify({'error': 'No accessible projects to report.'}), 403
     from central_report import build_central_report_pdf
-    pdf_buf = build_central_report_pdf(out)
-
-    from flask import current_app
-    folder_fs = os.path.join(current_app.root_path, 'static', 'uploads', 'central_reports')
-    os.makedirs(folder_fs, exist_ok=True)
-    filename = f"central_report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
-    full_path = os.path.join(folder_fs, filename)
-    with open(full_path, 'wb') as f:
-        f.write(pdf_buf.getvalue())
-
-    return {'ok': True, 'download_url': f'/static/uploads/central_reports/{filename}',
-            'project_count': len(out), 'total_defects': sum(p['total_defects'] for p in out)}
+    response = send_file(build_central_report_pdf(projects), mimetype='application/pdf',
+                         as_attachment=True, download_name='central_inspection_report.pdf')
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
 
 
 def tool_create_help_ticket(subject, description=''):
@@ -277,6 +271,8 @@ def _gemini_tools():
         # button is hidden for Admin sessions. Excluded here too, not just
         # hidden in the UI, so asking in natural language can't get around it.
         tools = [t for t in TOOLS if t['name'] != 'create_help_ticket']
+    else:
+        tools = [t for t in TOOLS if t['name'] != 'generate_central_report']
     return [{'function_declarations': [
         {'name': t['name'], 'description': t['description'], 'parameters': t['parameters']} for t in tools
     ]}]
@@ -293,9 +289,13 @@ def chat():
         return jsonify({'error': 'The assistant is not configured yet — GEMINI_API_KEY is not set on the server.'}), 503
 
     data = request.get_json(force=True, silent=True) or {}
-    user_message = (data.get('message') or '').strip()
-    history = data.get('history') or []
-    if not user_message:
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a message and conversation history.'}), 400
+    user_message = data.get('message')
+    history = data.get('history', [])
+    if not isinstance(history, list):
+        return jsonify({'error': 'Conversation history must be a list.'}), 400
+    if not isinstance(user_message, str) or not user_message.strip():
         return jsonify({'error': 'message is required.'}), 400
 
     try:
@@ -310,7 +310,10 @@ def chat():
     # back each turn) and reconstructed into typed Content objects here —
     # keeps the wire format simple and avoids the frontend needing to know
     # anything about the SDK's internal types.
-    contents = [types.Content.model_validate(h) for h in history]
+    try:
+        contents = [types.Content.model_validate(h) for h in history]
+    except ValueError:
+        return jsonify({'error': 'Conversation history could not be read.'}), 400
     contents.append(types.Content(role='user', parts=[types.Part(text=user_message)]))
 
     config = types.GenerateContentConfig(
@@ -319,17 +322,20 @@ def chat():
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
 
+    report_ready = False
     try:
         for _ in range(MAX_TOOL_ROUNDS):
             response = client.models.generate_content(model=MODEL, contents=contents, config=config)
             candidate = response.candidates[0] if response.candidates else None
-            parts = candidate.content.parts if candidate and candidate.content else []
+            if not candidate or not candidate.content or not candidate.content.parts:
+                return jsonify({'error': 'The assistant returned no answer. Please try again.'}), 502
+            parts = candidate.content.parts
             function_calls = [p.function_call for p in parts if p.function_call]
 
             if not function_calls:
                 final_text = ''.join(p.text for p in parts if p.text)
                 contents.append(candidate.content)
-                return jsonify({'reply': final_text, 'history': [c.model_dump(mode='json') for c in contents]})
+                return jsonify({'reply': final_text, 'report_ready': report_ready, 'history': [c.model_dump(mode='json') for c in contents]})
 
             contents.append(candidate.content)
             response_parts = []
@@ -339,6 +345,8 @@ def chat():
                     result = fn(**(fc.args or {})) if fn else {'error': f'Unknown tool {fc.name}'}
                 except Exception as e:
                     result = {'error': str(e)}
+                if fc.name == 'generate_central_report' and result.get('ok'):
+                    report_ready = True
                 response_parts.append(types.Part(function_response=types.FunctionResponse(
                     name=fc.name, response={'result': json.loads(json.dumps(result, default=str))}
                 )))
@@ -346,5 +354,6 @@ def chat():
 
         return jsonify({'reply': "I'm having trouble finishing that request — could you try rephrasing it?",
                          'history': [c.model_dump(mode='json') for c in contents]})
-    except Exception as e:
-        return jsonify({'error': f'Assistant error: {e}'}), 500
+    except Exception:
+        current_app.logger.exception('Assistant request failed')
+        return jsonify({'error': 'The assistant is temporarily unavailable. Please try again.'}), 502

@@ -129,6 +129,8 @@ def chimney_dashboard():
     guard = _login_guard()
     if guard:
         return guard
+    if not has_chimney_module(session.get('role'), session.get('modules', [])):
+        return jsonify({'error': "You don't have access to this module."}), 403
     ActivityLog.log(action='enter_module', entity_type='Module', entity_name='3D Inspection',
                      module='3D Inspection', performed_by=session.get('user_name', ''), role=session.get('role', ''))
     db.session.commit()
@@ -436,11 +438,9 @@ def _save_project_assets(project, files, require_model=False):
         current_app.logger.exception('Filesystem error saving Chimney assets')
         return jsonify({'error': 'Could not store new files. Check disk space and volume permissions. Existing files untouched.'}), 507
     activated = False
-    if result['model_path'] and not project.tileset_path:
+    if result['model_path']:
         try:
-            project.tileset_path = result['model_path']
-            db.session.commit()
-            activated = True
+            activated = ChimneyProject.activate_first_model(project.id, result['model_path'])
         except Exception:
             db.session.rollback()
             current_app.logger.exception('Could not activate uploaded Chimney model')

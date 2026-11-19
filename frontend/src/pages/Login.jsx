@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+import { moduleHref } from '../moduleRoutes';
 import { useAuth } from '../auth/AuthContext';
 
 const THEMES = {
@@ -34,7 +35,12 @@ export default function Login() {
     setSubmitting(true);
     try {
       const user = await login(email, password, loginAs);
-      navigate(user.role === 'Admin' ? '/admin' : '/dashboard', { replace: true });
+      const destination = user.role === 'Admin' ? '/admin' : '/dashboard';
+      if (import.meta.env.DEV) {
+        navigate(destination, { replace: true });
+      } else {
+        window.location.replace(destination);
+      }
     } catch (err) {
       setError(err.message || 'Invalid email or password.');
     } finally {
@@ -45,7 +51,7 @@ export default function Login() {
   return (
     <>
       <nav style={styles.navbar}>
-        <Link to="/" style={styles.navBrand}>
+        <a href={moduleHref('/')} style={styles.navBrand}>
           <svg style={styles.navBrandMark} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <rect x="8" y="9" width="8" height="7" rx="2" stroke="currentColor" strokeWidth="1.4" />
             <circle cx="11" cy="12" r="0.9" fill="currentColor" />
@@ -62,9 +68,9 @@ export default function Login() {
             <path d="M9 18H15" stroke="currentColor" strokeWidth="1" opacity="0.3" strokeLinecap="round" />
           </svg>
           DROGO AEROSPACE
-        </Link>
+        </a>
         <ul style={styles.navActions}>
-          <li><Link to="/" style={styles.navLink}>Home</Link></li>
+          <li><a href={moduleHref('/')} style={styles.navLink}>Home</a></li>
         </ul>
       </nav>
 
