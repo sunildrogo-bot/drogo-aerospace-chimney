@@ -3,6 +3,10 @@ FROM node:20-slim AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
+# Catch Chimney viewer/menu JavaScript syntax errors before creating a live image.
+COPY static/js/chimney_viewer.js static/js/chimney_assets.js /tmp/chimney-static-js/
+RUN node --check /tmp/chimney-static-js/chimney_viewer.js \
+    && node --check /tmp/chimney-static-js/chimney_assets.js
 COPY frontend/ ./
 RUN npm run build
 
