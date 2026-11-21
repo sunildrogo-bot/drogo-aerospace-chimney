@@ -65,7 +65,10 @@ def api_update_help_ticket(ticket_id):
     if guard:
         return guard
 
-    ticket = HelpTicket.query.get_or_404(ticket_id)
+    query = HelpTicket.query.filter_by(id=ticket_id)
+    if session.get('role') != 'Admin':
+        query = query.filter_by(submitted_by=session.get('user_name', ''))
+    ticket = query.first_or_404()
     data = request.get_json(force=True, silent=True) or {}
 
     # Admin moves it through Checking / Resolved — flips seen_by_reporter

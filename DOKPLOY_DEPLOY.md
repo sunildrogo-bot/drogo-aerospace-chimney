@@ -1,152 +1,45 @@
-# Deploying Chimney (NOVA+) to Dokploy
+# Chimney deployment on Dokploy
 
-This replaces the manual Nginx/systemd setup in `deploy.md` — Dokploy builds
-the `Dockerfile` in this repo, runs it as a container, and handles the
-reverse proxy + SSL automatically via its built-in Traefik.
+The application runs Flask, Gunicorn and a background inspection-upload worker in one image. Flask serves the React login and the server-rendered dashboards. Dokploy routes HTTPS traffic to port 8000.
 
----
+## Existing installation
 
-## 0. Before you start
+1. Record the current image or Git commit, the PostgreSQL backup identifier and the backup of the uploads volume. Verify that the backups can be restored to a separate environment. Keep the existing upload volume mounted at `/app/static/uploads`.
+2. Build the candidate Git revision in staging with its own database and uploads volume. To test an upgrade, restore copies of both production backups there. Use staging credentials for external integrations.
+3. Follow the release checks below. After they pass, select the same Git revision in the production application and choose **Deploy**. Keep manual deployments enabled. Check the running revision in Dokploy.
+4. If a check fails, redeploy the previous image against the same database and uploads volume. Review schema compatibility first. A database or volume restore can discard newer writes and requires a separate recovery decision.
 
-- Rotate the Gmail app password and Gemini API key — the ones that shipped
-  in earlier versions of this project were exposed and must be treated as
-  compromised.
-- Push this repo (with the `Dockerfile`, `.dockerignore`, and the updated
-  `app.py`) to GitHub if it isn't already there.
+## First installation
 
----
+1. Create a PostgreSQL database and a Dokploy Application backed by this repository. Select the root Dockerfile and container port 8000.
+2. Set a persistent, randomly generated `SECRET_KEY` in the application's environment. Use the same value across workers and redeploys. Set `DATABASE_URL` to the internal database connection string, for example:
 
-## 1. Create the PostgreSQL database in Dokploy
+   ```text
+   postgresql+psycopg://USER:PASSWORD@DATABASE_HOST:5432/DATABASE_NAME
+   ```
 
-In the Dokploy dashboard:
+   URL-encode special characters in credentials. The production supervisor requires both settings. Configure `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD` for welcome email, and `GEMINI_API_KEY` for the portal assistant, if those features are needed. Earlier repository versions contained mail and AI credentials. Verify those credentials have been revoked before enabling either integration.
 
-1. **Create Project** (if you don't have one yet) → give it a name like
-   `chimney`.
-2. Inside the project: **Create → Database → PostgreSQL**.
-3. Set a database name (e.g. `drogo_chimney_landsurvey`), a root/user
-   password — Dokploy will show you the **internal connection string**
-   once it's running (something like
-   `postgresql://user:pass@chimney-postgresql:5432/drogo_chimney_landsurvey`).
-   Copy this — you'll need it for step 3.
+3. Mount a persistent volume at `/app/static/uploads`. Both inspection assets and the background job queue use this directory.
+4. Deploy. The supervisor checks the database schema before launching Gunicorn and the upload worker. An unsuccessful check stops startup and appears in the deployment logs.
+5. In the application console, create the first administrator with:
 
----
+   ```sh
+   python seed_db.py --admin-email you@example.com
+   ```
 
-## 2. Create the app from this repo
+   Enter the password at the prompt. Running the command again preserves an existing administrator's password. Use `python seed_db.py` to initialize role and module lookups only. Older installations should review any demo accounts already present.
+6. Attach the intended domain to the application, enable HTTPS and verify the certificate and DNS point to this deployment.
 
-1. Inside the same project: **Create → Application**.
-2. **Source**: connect your GitHub account (if not already) and select
-   `sunildrogo-bot/drogo-aerospace-chimney`, branch `main`.
-3. **Build type**: Dockerfile (Dokploy should auto-detect the `Dockerfile`
-   at the repo root).
-4. **Port**: `8000` (matches `EXPOSE 8000` / the Gunicorn bind in the
-   Dockerfile).
+## Release checks
 
----
+| Check | Expected result |
+| --- | --- |
+| Home, login and dashboards | Home and login load. Signing in as Admin or Client opens the matching dashboard. A refresh preserves the session. |
+| Project assignments | A restricted client sees their assigned Land Survey and inspection projects. An administrator can manage projects. |
+| Upload worker | In a staging project, submit a small known-good file and watch it move from queued to completed. Confirm the file survives a staging redeploy. |
+| Reports | An assigned client can open their inspection PDF. An administrator can download a combined PDF containing Land Survey and 3D Inspection projects. |
+| Existing 3D model | Verify the saved model, a known finding, its image and its location in the viewer. Compare map styles with the same reference point. |
+| External integrations | Use designated test accounts to check mail and the assistant if enabled. Review web and worker logs for errors. |
 
-## 3. Set environment variables
-
-In the app's **Environment** tab, add:
-
-```
-DATABASE_URL=postgresql+pypostgresql://<user>:<password>@<postgresql-service-name>:5432/drogo_chimney_landsurvey
-SECRET_KEY=<generate with: python3 -c "import secrets; print(secrets.token_hex(32))">
-GMAIL_ADDRESS=<your rotated Gmail address, optional>
-GMAIL_APP_PASSWORD=<your rotated app password, optional>
-MAIL_SENDER_NAME=Drogo Aerospace
-GEMINI_API_KEY=<your rotated key, optional>
-```
-
-Use `postgresql+pypostgresql://` (not the bare `postgresql://` Dokploy shows you) — that
-prefix is what SQLAlchemy needs to pick the right driver. The
-`<postgresql-service-name>` is the internal hostname Dokploy assigned the
-database service (visible on the database's own page — usually something
-like the database's name).
-
----
-
-## 4. Add a volume for uploads (recommended)
-
-Without this, every redeploy wipes `static/uploads/` (defect photos,
-tilesets, rectified images) since the container filesystem is ephemeral.
-
-In the app's **Volumes** (or **Mounts**) tab, add:
-
-```
-Container path: /app/static/uploads
-```
-
-Dokploy will back this with a persistent volume on the host, so uploads
-survive redeploys.
-
----
-
-## 5. Deploy
-
-Click **Deploy**. Dokploy will:
-1. Clone the repo
-2. Build the `Dockerfile` (compiles the React frontend, installs Python
-   deps, packages everything into one image)
-3. Start the container on port 8000
-
-Watch the build logs — the frontend `npm run build` and Python
-`pip install` steps will show here. A successful build ends with the
-container showing as **Running**.
-
----
-
-## 6. Seed the database (one-time)
-
-Dokploy's app page has a **Terminal/Console** tab (or you can `docker
-exec` into the container from the VPS if you have shell access). Run:
-
-```bash
-python seed_db.py
-```
-
-This creates all tables and demo users (safe to re-run). **Change the
-seeded admin password after first login** — `sunil@drogodrones.com` /
-`admin123` is a known default.
-
----
-
-## 7. Point your domain at it
-
-In the app's **Domains** tab in Dokploy:
-1. Add `semistar.online` (and `www.semistar.online` if you want both).
-2. Dokploy shows you the DNS target — usually just your VPS's IP for an
-   A record, same as before:
-
-   | Type | Name | Value |
-   |---|---|---|
-   | A | `@` | your VPS IP |
-   | A | `www` | your VPS IP |
-
-3. Enable **HTTPS** in the same tab — Dokploy's Traefik requests and
-   renews the Let's Encrypt certificate automatically. No `certbot`
-   commands needed.
-
----
-
-## 8. Verify
-
-- `https://semistar.online/` → Flask home page
-- `https://semistar.online/login` → React login (background photo, glass
-  card, animated Client/Admin toggle)
-- Log in → `/admin` or `/dashboard` → original Jinja pages, unchanged
-- Upload a defect photo → confirm it persists after a redeploy (tests the
-  volume from step 4)
-
-## Redeploying after code changes
-
-Push to `main` on GitHub, then click **Deploy** again in Dokploy (or
-enable auto-deploy on push in the app's settings). No manual `git pull` /
-`npm run build` / `systemctl restart` — Dokploy rebuilds the whole image
-fresh each time.
-
-## Notes on what changed from the manual VPS setup
-
-- `app.py` now serves `frontend/dist/index.html` directly at `/login` and
-  the built JS/CSS at `/assets/*` — no separate Nginx `location` blocks
-  needed to split traffic between React and Flask.
-- Everything else (`/admin`, `/dashboard`, `/dvc`, etc.) is untouched —
-  still plain Jinja-rendered Flask routes, exactly as before.
+Use the [viewer checklist](docs/chimney_priority2_qa.md) for the compass, measurement, PDF and mobile checks. Keep the previous image available until the checks pass on the released revision.

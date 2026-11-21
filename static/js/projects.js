@@ -97,7 +97,7 @@ function projectCardHtml(p) {
   return `
     <a href="${href}" class="project-card">
       <div class="card-banner" style="background-image:url('${banner}');">
-        <div class="card-tag">${(p.state || p.module || '').toUpperCase() || 'PROJECT'}</div>
+        <div class="card-tag">${escapeHtml((p.state || p.module || '').toUpperCase() || 'PROJECT')}</div>
       </div>
       <div class="card-body">
         <div class="card-content-row">
@@ -119,9 +119,9 @@ function projectCardHtml(p) {
 }
 
 function escapeHtml(str) {
-  const d = document.createElement('div');
-  d.textContent = str == null ? '' : String(str);
-  return d.innerHTML;
+  return String(str ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[character]);
 }
 
 async function loadProjects() {
@@ -133,7 +133,7 @@ async function loadProjects() {
     const projects = data.projects || [];
     if (!projects.length) {
       grid.innerHTML = `<div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--text-muted);font-size:13px;">
-        No projects yet. Click <b>+ Add Project</b> to create the first one.</div>`;
+        No projects to display.</div>`;
       return;
     }
     grid.innerHTML = projects.map(projectCardHtml).join('');

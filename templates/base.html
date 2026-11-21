@@ -308,7 +308,7 @@
   // only in JS variables. sessionStorage survives that (clears when the
   // browser tab actually closes, which is the right lifetime for this —
   // not meant to persist forever like localStorage would).
-  const AI_CHAT_STORAGE_KEY = 'drogoAiChatState';
+  const AI_CHAT_STORAGE_KEY = 'drogoAiChatState:' + {{ session.user_id|tojson }} + ':' + {{ session.role|tojson }};
 
   let _aiChatHistory = [];       // raw Gemini conversation history, sent back on every request
   let _aiDisplayMessages = [];   // [{role, text}] — simplified, just for re-rendering the message list
@@ -338,12 +338,7 @@
     // only if there's actually a restored conversation to show.
     if (_aiDisplayMessages.length) {
       box.innerHTML = '';
-      _aiDisplayMessages.forEach(m => {
-        const el = document.createElement('div');
-        el.className = `ai-msg ${m.role}`;
-        el.textContent = m.text;
-        box.appendChild(el);
-      });
+      _aiDisplayMessages.forEach(m => aiAppendMessage(m.role, m.text, false, m.reportReady));
       box.scrollTop = box.scrollHeight;
     }
     if (saved.open) document.getElementById('ai-chat-panel').classList.add('open');
@@ -402,11 +397,17 @@
     }
   }
 
-  function aiAppendMessage(role, text, persist = true) {
+  function aiAppendMessage(role, text, persist = true, reportReady = false) {
     const box = document.getElementById('ai-chat-messages');
     const el = document.createElement('div');
     el.className = `ai-msg ${role}`;
     el.textContent = text;
+    if (reportReady && role === 'assistant') {
+      const link = document.createElement('a');
+      link.href = {{ url_for('assistant_bp.central_report')|tojson }};
+      link.textContent = 'Download combined PDF';
+      el.append(document.createElement('br'), link);
+    }
     box.appendChild(el);
     box.scrollTop = box.scrollHeight;
     // The transient "Thinking…" indicator is deliberately NOT persisted —
@@ -415,7 +416,7 @@
     // multi-page app; there's no stuck "Thinking…" left behind on return,
     // just the conversation up to the last real message.
     if (persist) {
-      _aiDisplayMessages.push({ role, text });
+      _aiDisplayMessages.push({ role, text, reportReady });
       saveAiChatState();
     }
     return el;
@@ -446,7 +447,7 @@
         return;
       }
       _aiChatHistory = data.history || _aiChatHistory;
-      aiAppendMessage('assistant', data.reply || '(no response)');
+      aiAppendMessage('assistant', data.reply || '(no response)', true, data.report_ready);
     } catch (e) {
       typingEl.remove();
       aiAppendMessage('error', 'Network error — please try again.');
@@ -464,7 +465,10 @@
   // in on this same browser tab never sees the previous user's chat
   // history — both a UX reset and, since conversations can reference
   // real project/defect data, a privacy matter.
-  try { sessionStorage.removeItem('drogoAiChatState'); } catch (e) {}
+  try {
+    Object.keys(sessionStorage).filter(key => key === 'drogoAiChatState' || key.startsWith('drogoAiChatState:'))
+      .forEach(key => sessionStorage.removeItem(key));
+  } catch (e) {}
 </script>
 {% endif %}
 

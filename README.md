@@ -1,74 +1,34 @@
-# NOVA+ Flask Application
+# Chimney inspection portal
 
-Power Transmission Intelligence Platform — rebuilt with Flask.
+NOVA+ manages 3D inspections and Land Survey projects. Flask serves the API, dashboards and reports. React provides the production login page. Inspection uploads use a background worker and a persistent uploads directory.
 
-## Project Structure
+## Run locally
 
-```
-nova_flask/
-├── app.py                  # Flask application & routes
-├── requirements.txt
-├── static/
-│   └── data/
-│       └── towers.json     # DVC tower & GOMD data (served via /api/towers)
-└── templates/
-    ├── base.html           # Shared layout (navbar, CSS, Leaflet CDN)
-    ├── home.html           # Landing page with animated SVG cover
-    ├── login.html          # Login form (POST → session)
-    ├── register.html       # Register form (POST → session)
-    ├── admin.html          # Admin dashboard (modules + user management)
-    ├── projects.html       # Project selection (DVC, MPPTCL)
-    ├── dvc.html            # DVC interactive Leaflet map
-    └── mpptcl.html         # MPPTCL map (placeholder)
-```
+From the repository root, use Python 3.12 and Node.js 22.
 
-## How to Run
-
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Start the development server
+```sh
+python -m venv venv
+. venv/bin/activate
+python -m pip install -r requirements.txt
+npm --prefix frontend ci
+npm --prefix frontend run build
+python seed_db.py --admin-email you@example.com
 python app.py
-
-# 3. Open in browser
-http://localhost:5000
 ```
 
-## Key Improvements over Single-File HTML
+Open `http://127.0.0.1:5000/`. Local development defaults to SQLite in `instance/nova.db`. The development server generates a new session key on restart unless `SECRET_KEY` is configured. For background uploads during development, run `python chimney_upload_worker.py` from the same environment in a second terminal. Use `python seed_db.py --demo` only when sample accounts and projects are wanted in a development database.
 
-| Feature | Old (vibe-coded HTML) | New (Flask) |
-|---|---|---|
-| Auth | JS array in browser (insecure) | Server-side session with `flask.session` |
-| Routing | JS `show()` function | Proper URL routes (`/login`, `/admin`, `/dvc`) |
-| Data | Inline JS `const STATIC_TOWERS` | JSON file served via `/api/towers` API |
-| Templates | One giant HTML file | Jinja2 templates with `base.html` inheritance |
-| Security | Passwords visible in source | Passwords never sent to browser |
-| Extensibility | Hard to add features | Add new routes & templates easily |
+## Check a release
 
-## Adding a Database (Next Step)
-
-Replace the in-memory `users = []` list in `app.py` with SQLAlchemy:
-
-```bash
-pip install flask-sqlalchemy
+```sh
+python -m unittest discover -s tests -v
+npm --prefix frontend ci
+npm --prefix frontend run build
+for script in static/js/*.js; do node --check "$script" || exit 1; done
 ```
 
-```python
-from flask_sqlalchemy import SQLAlchemy
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///nova.db'
-db = SQLAlchemy(app)
+The PostgreSQL upgrade test uses a temporary schema when `CHIMNEY_TEST_POSTGRES_URL` is set. Point this variable at a disposable test database. The release workflow also builds the production image and checks both login roles through a browser.
 
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100))
-    email = db.Column(db.String(120), unique=True)
-    password_hash = db.Column(db.String(200))
-```
+## Deployment
 
-## Environment Variables (Production)
-
-```bash
-export SECRET_KEY="your-strong-random-secret"
-export FLASK_ENV=production
-```
+Use the [Dokploy procedure](DOKPLOY_DEPLOY.md) for the container deployment and the [viewer checklist](docs/chimney_priority2_qa.md) for inspection acceptance. A [systemd and Nginx procedure](deploy.md) is available for a manually managed VPS.

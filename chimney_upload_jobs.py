@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -218,4 +219,10 @@ def finish_job(static_folder, job, error=None, model_activated=False):
         current['error'] = (str(error)[:400] if error else '')
         current['model_activated'] = model_activated
         _write_json(folder / 'job.json', current)
+        if not error:
+            # The bundle now contains the original, and completed retries use job.json.
+            try:
+                (folder / 'upload.part').unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).warning('Could not release staging file for job %s', job['id'])
         return public_job(current)

@@ -1,4 +1,5 @@
 import os
+import secrets
 import time
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from functools import wraps
@@ -8,11 +9,11 @@ from dotenv import load_dotenv
 load_dotenv()
 # ── App factory ───────────────────────────────────────────────────────────────
 
-def create_app(db_url: str | None = None) -> Flask:
+def create_app(db_url: str | None = None, *, initialize_schema=True) -> Flask:
     app = Flask(__name__)
 
     # ── Config ────────────────────────────────────────────────────────────────
-    app.secret_key = os.environ.get('SECRET_KEY', 'nova-plus-dev-secret-CHANGE-IN-PROD')
+    app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
 
     # SQLite by default; override with DATABASE_URL env var for PostgreSQL/MySQL
     base_dir = os.path.abspath(os.path.dirname(__file__))
@@ -62,12 +63,10 @@ def create_app(db_url: str | None = None) -> Flask:
     from flask_migrate import Migrate
     Migrate(app, db)
 
-    # Self-healing schema check: adds any new chimney_defects columns this
-    # version of the app needs (defect_type/area/height_label/image_path) to
-    # whatever database is actually configured above, every time the app
-    # starts. Safe no-op if they already exist; never blocks startup on failure.
+    # The production supervisor initializes the schema before starting children.
     from migrate_add_defect_columns import ensure_defect_columns
-    ensure_defect_columns(app)
+    if initialize_schema and not ensure_defect_columns(app):
+        raise RuntimeError('Database initialization failed. Check the migration log.')
 
     # ── Blueprints ────────────────────────────────────────────────────────────
     from users_routes import users_bp
@@ -127,6 +126,23 @@ def create_app(db_url: str | None = None) -> Flask:
     import users as user_store
 
     @app.before_request
+    def refresh_session_access():
+        if 'user_id' not in session:
+            return
+        from chimney_security import asset_scope
+        if request.endpoint in ('static', 'serve_upload', 'serve_frontend_assets') and asset_scope(request.path) is None:
+            return
+        from models import User
+        user = db.session.get(User, session['user_id'])
+        if user is None or user.status != 'Active' or session.get('role') not in user.role_names():
+            session.clear()
+            return
+        current = dict(user_name=user.username, user_email=user.email,
+                       modules=user.module_names(), all_roles=user.role_names())
+        if any(session.get(key) != value for key, value in current.items()):
+            session.update(current)
+
+    @app.before_request
     def _authorize_chimney_upload_request():
         """Guard both Flask's /static/uploads and our cached /uploads route.
 
@@ -142,7 +158,16 @@ def create_app(db_url: str | None = None) -> Flask:
             abort(404)
         if 'user_id' not in session:
             abort(401)
-        from models import ChimneyProject, User
+        from models import ChimneyProject, Division, Line, Project, User
+        if scope[0] == 'line':
+            from projects_routes import visible_projects
+            project_ids = visible_projects().with_entities(Project.id)
+            line = Line.query.join(Division).filter(
+                Line.kml_path == scope[1], Division.project_id.in_(project_ids)
+            ).first()
+            if line is None:
+                abort(404)
+            return
         if scope[0] == 'project':
             project = ChimneyProject.query.get(scope[1])
         else:
@@ -309,6 +334,10 @@ def create_app(db_url: str | None = None) -> Flask:
     @app.route('/dvc')
     @module_required('Land Survey')
     def dvc():
+        from flask import abort
+        from projects_routes import legacy_project_allowed
+        if not legacy_project_allowed('Land Survey', 'dvc'):
+            abort(403)
         return render_template('dvc.html', user_name=session['user_name'])
 
     @app.route('/mpptcl')
@@ -331,12 +360,20 @@ def create_app(db_url: str | None = None) -> Flask:
     @app.route('/land-survey/kothegudam')
     @module_required('Land Survey')
     def land_survey_kothegudam():
+        from flask import abort
+        from projects_routes import legacy_project_allowed
+        if not legacy_project_allowed('Land Survey', 'land-survey/kothegudam'):
+            abort(403)
         return render_template('kothegudam.html', user_name=session['user_name'])
 
     @app.route('/api/towers')
-    @login_required
+    @module_required('Land Survey')
     def api_towers():
-        with open('static/data/towers.json', 'r') as f:
+        from flask import abort
+        from projects_routes import legacy_project_allowed
+        if not legacy_project_allowed('Land Survey', 'dvc'):
+            abort(403)
+        with app.open_resource('static/data/towers.json') as f:
             data = json.load(f)
         return jsonify(data)
 
@@ -344,7 +381,7 @@ def create_app(db_url: str | None = None) -> Flask:
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-app = create_app()
+app = create_app(initialize_schema=os.environ.get('CHIMNEY_SCHEMA_READY') != '1')
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=os.environ.get('FLASK_DEBUG') == '1', port=5000)

@@ -1,24 +1,16 @@
-"""
-seed_db.py — Creates all tables and seeds the database with demo users.
+"""Initialize reference data, optionally creating a first administrator or demo fixtures."""
+import argparse
+from getpass import getpass
 
-Run once after setting up the project:
-    python seed_db.py
-
-Safe to re-run: existing users are skipped (matched by email).
-"""
-from app import create_app
-from models import db, Role, Module
+from app import app
+from models import db, Module, User
 from users import _get_or_create_role, _get_or_create_module, ROLES, MODULES, MODULE_ROUTES
 from werkzeug.security import generate_password_hash
-import os
-
-app = create_app()
 
 SEED_USERS = [
     {
         'username': 'Sunil Kumar',
         'email':    'sunil@drogodrones.com',
-        'password': 'admin123',
         'contact':  '+91 98765 43210',
         'roles':    ['Admin', 'Client User'],
         'modules':  ['Transmission Line', 'Land Survey', '3D Inspection'],
@@ -27,7 +19,6 @@ SEED_USERS = [
     {
         'username': 'Ramesh Patel',
         'email':    'ramesh@drogodrones.com',
-        'password': 'client123',
         'contact':  '+91 91234 56780',
         'roles':    ['Client User'],
         'modules':  ['Transmission Line'],
@@ -36,7 +27,6 @@ SEED_USERS = [
     {
         'username': 'Anjali Sharma',
         'email':    'anjali@drogodrones.com',
-        'password': 'client123',
         'contact':  '+91 99887 76655',
         'roles':    ['Client User'],
         'modules':  ['Land Survey'],
@@ -45,7 +35,6 @@ SEED_USERS = [
     {
         'username': 'Vikram Singh',
         'email':    'vikram@drogodrones.com',
-        'password': 'client123',
         'contact':  '+91 90909 12121',
         'roles':    ['Client User'],
         'modules':  ['3D Inspection', 'Land Survey'],
@@ -54,7 +43,6 @@ SEED_USERS = [
     {
         'username': 'Meena Rao',
         'email':    'meena@drogodrones.com',
-        'password': 'admin123',
         'contact':  '+91 98001 22334',
         'roles':    ['Admin'],
         'modules':  ['Transmission Line', 'Land Survey', '3D Inspection'],
@@ -63,16 +51,8 @@ SEED_USERS = [
 ]
 
 
-def seed():
-    from models import User
-
-    os.makedirs('instance', exist_ok=True)
-
+def seed(*, admin_email=None, demo=False):
     with app.app_context():
-        # ── Create all tables ─────────────────────────────────────────────────
-        db.create_all()
-        print("✓ Tables created (or already exist)")
-
         # ── Seed lookup tables ────────────────────────────────────────────────
         for r in ROLES:
             _get_or_create_role(r)
@@ -87,32 +67,50 @@ def seed():
         db.session.commit()
         print("✓ Roles and modules seeded")
 
-        # ── Seed users ────────────────────────────────────────────────────────
-        created = 0
-        skipped = 0
-        for data in SEED_USERS:
-            existing = User.query.filter_by(email=data['email']).first()
+        if admin_email:
+            email = admin_email.strip().lower()
+            if '@' not in email or any(char.isspace() for char in email):
+                raise SystemExit('Enter a valid administrator email address.')
+            existing = User.query.filter_by(email=email).first()
             if existing:
-                skipped += 1
-                continue
+                if 'Admin' not in existing.role_names():
+                    raise SystemExit('An account with that email already exists without the Admin role.')
+                print('The administrator account already exists.')
+                return
+            accounts = [dict(username='Administrator', email=email, contact='', status='Active',
+                             roles=['Admin', 'Client User'], modules=MODULES)]
+        elif demo:
+            accounts = SEED_USERS
+        else:
+            return
+
+        missing = [account for account in accounts if not User.query.filter_by(email=account['email']).first()]
+        if missing:
+            password = getpass('New password for the account(s) being created: ')
+            if len(password) < 12:
+                raise SystemExit('Use a password of at least 12 characters.')
+        created = 0
+        for data in missing:
 
             user = User(
                 username      = data['username'],
                 email         = data['email'],
-                password_hash = generate_password_hash(data['password']),
+                password_hash = generate_password_hash(password),
                 contact       = data['contact'],
                 status        = data['status'],
             )
+            db.session.add(user)
             for role_name in data['roles']:
                 user.roles.append(_get_or_create_role(role_name))
             for mod_name in data['modules']:
                 user.modules.append(_get_or_create_module(mod_name))
 
-            db.session.add(user)
             created += 1
 
         db.session.commit()
-        print(f"✓ Users: {created} created, {skipped} already existed")
+        print(f"Created {created} user(s).")
+        if not demo:
+            return
 
         # ── Seed demo Transmission Line projects ────────────────────────────────
         from models import Project, Division, Line
@@ -163,15 +161,12 @@ def seed():
 
         db.session.commit()
         print("✓ Demo projects seeded (DVC legacy, MPPTCL dynamic, Kothegudam legacy)")
-        print()
-        print("═══ Demo credentials ═══════════════════════════════")
-        print("  Admin:       sunil@drogodrones.com  / admin123")
-        print("  Admin:       meena@drogodrones.com  / admin123")
-        print("  Client User: ramesh@drogodrones.com / client123")
-        print("  Client User: anjali@drogodrones.com / client123")
-        print("  Client User: vikram@drogodrones.com / client123")
-        print("════════════════════════════════════════════════════")
+
 
 
 if __name__ == '__main__':
-    seed()
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--admin-email', help='Create a first administrator, prompting for a password.')
+    mode.add_argument('--demo', action='store_true', help='Add sample accounts and projects to a development database.')
+    seed(**vars(parser.parse_args()))

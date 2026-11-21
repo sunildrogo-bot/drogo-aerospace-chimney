@@ -168,12 +168,8 @@ def api_client_dashboard_summary():
     if guard:
         return guard
 
-    from projects_routes import _visible_project_ids
-    lsurvey_projects = Project.query.filter_by(module='Land Survey').all()
-    allowed_lsurvey = _visible_project_ids('Land Survey')
-    if allowed_lsurvey is not None:
-        lsurvey_projects = [p for p in lsurvey_projects if p.id in allowed_lsurvey]
-    lsurvey_count = len(lsurvey_projects)
+    from projects_routes import visible_projects
+    lsurvey_count = visible_projects('Land Survey').count()
 
     from chimney_routes import _visible_chimney_project_ids
     chimney_projects = ChimneyProject.query.all()

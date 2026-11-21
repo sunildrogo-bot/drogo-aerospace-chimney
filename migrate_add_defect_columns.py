@@ -27,7 +27,7 @@ NEW_DEFECT_COLUMNS = {
     'location':     {'mssql': 'NVARCHAR(150)', 'default': 'VARCHAR(150)'},
     'status':               {'mssql': 'NVARCHAR(20)',  'default': 'VARCHAR(20)'},
     'rectified_image_path': {'mssql': 'NVARCHAR(255)', 'default': 'VARCHAR(255)'},
-    'closed_at':            {'mssql': 'DATETIME',       'default': 'DATETIME'},
+    'closed_at':            {'postgresql': 'TIMESTAMP WITHOUT TIME ZONE', 'default': 'DATETIME'},
     'closed_by':            {'mssql': 'NVARCHAR(120)', 'default': 'VARCHAR(120)'},
     'cam_pos_x': {'mssql': 'FLOAT', 'default': 'FLOAT'},
     'cam_pos_y': {'mssql': 'FLOAT', 'default': 'FLOAT'},
@@ -67,7 +67,7 @@ NEW_ACTIVITY_LOG_COLUMNS = {
 }
 
 NEW_USER_COLUMNS = {
-    'last_login_at': {'mssql': 'DATETIME', 'default': 'DATETIME'},
+    'last_login_at': {'postgresql': 'TIMESTAMP WITHOUT TIME ZONE', 'default': 'DATETIME'},
     'photo_path':    {'mssql': 'NVARCHAR(255)', 'default': 'VARCHAR(255)'},
     'dashboard_notes': {'mssql': 'NVARCHAR(MAX)', 'default': 'TEXT'},
 }
@@ -171,6 +171,7 @@ def ensure_defect_columns(app, verbose=True):
             db.create_all()
     except Exception as e:
         log(f"WARNING — could not auto-create any missing tables: {e}")
+        return False
 
     ok1 = _ensure_columns(app, 'chimney_defects', NEW_DEFECT_COLUMNS, verbose)
     ok2 = _ensure_columns(app, 'chimney_projects', NEW_PROJECT_COLUMNS, verbose)
@@ -290,8 +291,9 @@ def _rename_module(app, old_name, new_name, verbose=True):
 
 
 def main():
-    from app import create_app
-    app = create_app()
+    import os
+    os.environ['CHIMNEY_SCHEMA_READY'] = '1'
+    from app import app
     ok = ensure_defect_columns(app)
     if not ok:
         sys.exit(1)

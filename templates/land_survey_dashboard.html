@@ -62,7 +62,7 @@
     <div class="banner-heading"><span>Land Survey Projects</span></div>
     <div class="banner-sub">Select a project to view its surveyed site</div>
     </div>
-    <button class="btn-add-project" onclick="openAddProjectModal()">+ Add Project</button>
+    {% if session.role == 'Admin' %}<button class="btn-add-project" onclick="openAddProjectModal()">+ Add Project</button>{% endif %}
   </div>
   <div class="projects-area">
      <div class="section-label">
@@ -73,6 +73,7 @@
     </div>
   </div>
 </div>
-{% include "_add_project_modal.html" %}
+{% if session.role == 'Admin' %}{% include "_add_project_modal.html" %}{% endif %}
+<script src="{{ url_for('static', filename='js/projects.js') }}"></script>
 <script>window.CURRENT_MODULE = {{ module|tojson }};</script>
 {% endblock %}

@@ -29,7 +29,7 @@ python app.py          # runs on http://127.0.0.1:5000
 
 # Terminal 2 — this frontend
 cd frontend
-npm install
+npm ci
 npm run dev             # runs on http://localhost:5173
 ```
 
@@ -40,42 +40,6 @@ existing session cookie just works, no CORS setup needed.
 
 ## Production
 
-```bash
-npm run build
-```
+Run `npm ci` and `npm run build` in this directory. Flask serves the built login page at `/login` and its files under `/assets/`. Both dashboards load as Flask pages after sign-in. The Vite development server also includes a React client-dashboard preview.
 
-produces static files in `dist/`. Deploy these behind the **same origin**
-as the Flask API (either served by Flask itself via `send_from_directory`,
-or a reverse proxy in front of both) and the session cookie keeps working
-exactly the same way, no code changes needed.
-
-## Migration strategy
-
-Converting all ~20 existing pages in one shot isn't realistic or safe for
-an app already in real use. Instead:
-
-1. **This slice**: Login + the Client Dashboard (`/dashboard`) are fully
-   migrated. Every module card on the dashboard still links **out** to
-   the existing server-rendered pages (`moduleRoutes.js` handles this) —
-   nothing else breaks.
-2. **Next**: pick one module (Admin panel, or one of Chimney/TRANS/Land
-   Survey/Transmission Line) and migrate its pages the same way — new
-   React pages calling the *same* existing JSON API endpoints those pages
-   already use (most of this backend was already API-driven before this
-   change).
-3. Repeat until every page has a React equivalent, then retire the old
-   Jinja templates.
-
-At every step, anything not yet migrated keeps working via a full-page
-link to its existing URL — the app is never in a broken in-between state.
-
-## What changed on the backend
-
-- `auth_api.py` — new, additive JSON endpoints (`/api/auth/login`,
-  `/logout`, `/me`, `/switch-role`, `/dashboard`) that reuse the exact
-  same `user_store.authenticate()` / session logic the old `/login` route
-  already used. The old form-POST `/login` route is untouched and still
-  works for any page that hasn't migrated yet.
-- Nothing else changed. Every existing API endpoint (chimney defects,
-  TRANS photos/reports, users, projects) was already JSON — this
-  frontend can start calling those directly as each page migrates.
+See the [deployment procedure](../DOKPLOY_DEPLOY.md) for the container build, acceptance checks and rollback.

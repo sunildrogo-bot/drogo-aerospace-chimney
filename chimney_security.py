@@ -7,7 +7,7 @@ from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 
 PROJECT_FOLDERS = frozenset({
-    'chimney_tiles', 'chimney_defect_images', 'chimney_rectified_images', 'kml',
+    'chimney_tiles', 'chimney_tilesets', 'chimney_defect_images', 'chimney_rectified_images', 'kml',
 })
 LINKED_FOLDERS = {
     'chimney_covers': 'cover_snapshot_path',
@@ -36,14 +36,15 @@ def asset_scope(path: str):
         return None
     subpath = path[len(prefix):]
     parts = subpath.split('/')
-    if not parts or parts[0] not in PROJECT_FOLDERS | LINKED_FOLDERS.keys() | {'report_crops'}:
-        return None
-    if (len(parts) < 2 or any(part in ('', '.', '..') for part in parts)
-            or '\\' in subpath or '\x00' in subpath):
+    if any(part in ('', '.', '..') for part in parts) or '\\' in subpath or '\x00' in subpath:
         return ('deny',)
     folder = parts[0]
-    if folder == 'report_crops':
+    if folder in {'report_crops', 'central_reports'}:
         return ('deny',)
+    if folder not in PROJECT_FOLDERS and folder not in LINKED_FOLDERS:
+        return None
+    if folder == 'kml' and len(parts) == 2 and parts[1].lower().endswith(('.kml', '.kmz')):
+        return ('line', 'uploads/' + subpath)
     if folder in PROJECT_FOLDERS:
         if len(parts) < 3 or not parts[1].isascii() or not parts[1].isdecimal() or int(parts[1]) < 1:
             return ('deny',)

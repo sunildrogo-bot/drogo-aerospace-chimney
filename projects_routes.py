@@ -46,29 +46,44 @@ def _admin_guard():
     return None
 
 
-def _visible_project_ids(module_name):
-    """None means "no restriction, show every project in this module" —
-    Admin sessions always get this, and so does a Client User who hasn't
-    had any specific projects assigned for this module (the
-    backward-compatible default). Otherwise, the set of project IDs this
-    Client User is actually allowed to see."""
+def visible_projects(module=None):
+    """Projects visible to the current role, including module-specific assignments."""
+    query = Project.query
+    if module:
+        query = query.filter_by(module=module)
     if session.get('role') == 'Admin':
-        return None
-    user = User.query.get(session.get('user_id'))
-    if not user:
-        return set()  # no valid session user — show nothing rather than guess
-    return user.restricted_project_ids_for_module(module_name)
+        return query
+    user = db.session.get(User, session['user_id']) if session.get('user_id') else None
+    if user is None:
+        return query.filter(False)
+    query = query.filter(Project.module.in_(user.module_names()))
+    assignments = user.allowed_projects
+    if assignments:
+        restricted_modules = {project.module for project in assignments}
+        assigned_ids = [project.id for project in assignments]
+        query = query.filter(
+            ~Project.module.in_(restricted_modules) | Project.id.in_(assigned_ids)
+        )
+    return query
 
 
-def _project_access_guard(project):
-    """For direct-URL access to a project's info page — the list endpoint
-    filtering above only helps if someone actually goes through the
-    list; this closes the gap for anyone who has (or guesses) a direct
-    link to a project they're not allowed to see."""
-    allowed_ids = _visible_project_ids(project.module)
-    if allowed_ids is not None and project.id not in allowed_ids:
-        return jsonify({'error': "You don't have access to this project."}), 403
-    return None
+def legacy_project_allowed(module, route):
+    if session.get('role') == 'Admin':
+        return True
+    user = db.session.get(User, session['user_id']) if session.get('user_id') else None
+    if user is None or module not in user.module_names():
+        return False
+    allowed = user.restricted_project_ids_for_module(module)
+    return allowed is None or Project.query.filter(
+        Project.id.in_(allowed), Project.legacy_route == route
+    ).first() is not None
+
+
+@projects_bp.before_request
+def authorize_projects():
+    if request.method in ('GET', 'HEAD', 'OPTIONS'):
+        return _login_guard()
+    return _admin_guard()
 
 
 def _ext_ok(filename, allowed):
@@ -109,28 +124,12 @@ def _haversine_km(lat1, lng1, lat2, lng2):
 
 @projects_bp.route('/api/projects', methods=['GET'])
 def api_list_projects():
-    guard = _login_guard()
-    if guard:
-        return guard
-    module = request.args.get('module', '')
-    q = Project.query
-    if module:
-        q = q.filter_by(module=module)
-    projects = q.order_by(Project.created_at.asc()).all()
-
-    if module:
-        allowed_ids = _visible_project_ids(module)
-        if allowed_ids is not None:
-            projects = [p for p in projects if p.id in allowed_ids]
-
+    projects = visible_projects(request.args.get('module')).order_by(Project.created_at.asc()).all()
     return jsonify({'projects': [p.to_dict() for p in projects]})
 
 
 @projects_bp.route('/api/projects', methods=['POST'])
 def api_create_project():
-    guard = _login_guard()
-    if guard:
-        return guard
 
     form = request.form
     name = (form.get('name') or '').strip()
@@ -182,10 +181,7 @@ def api_create_project():
 
 @projects_bp.route('/api/projects/<int:project_id>', methods=['GET'])
 def api_get_project(project_id):
-    guard = _login_guard()
-    if guard:
-        return guard
-    project = Project.query.get_or_404(project_id)
+    project = visible_projects().filter_by(id=project_id).first_or_404()
     data = project.to_dict()
     data['divisions'] = [d.to_dict() for d in project.divisions]
     return jsonify(data)
@@ -193,9 +189,6 @@ def api_get_project(project_id):
 
 @projects_bp.route('/api/projects/<int:project_id>', methods=['DELETE'])
 def api_delete_project(project_id):
-    guard = _login_guard()
-    if guard:
-        return guard
     project = Project.query.get_or_404(project_id)
 
     data = request.get_json(force=True, silent=True) or {}
@@ -213,13 +206,7 @@ def api_delete_project(project_id):
 
 @projects_bp.route('/projects/<int:project_id>/info')
 def project_info(project_id):
-    guard = _login_guard()
-    if guard:
-        return guard
-    project = Project.query.get_or_404(project_id)
-    guard = _project_access_guard(project)
-    if guard:
-        return guard
+    project = visible_projects().filter_by(id=project_id).first_or_404()
     return render_template('project_info.html', project=project, user_name=session.get('user_name', ''))
 
 
@@ -227,19 +214,13 @@ def project_info(project_id):
 
 @projects_bp.route('/api/projects/<int:project_id>/divisions', methods=['GET'])
 def api_list_divisions(project_id):
-    guard = _login_guard()
-    if guard:
-        return guard
-    Project.query.get_or_404(project_id)
+    visible_projects().filter_by(id=project_id).first_or_404()
     divisions = Division.query.filter_by(project_id=project_id).order_by(Division.created_at.asc()).all()
     return jsonify({'divisions': [d.to_dict() for d in divisions]})
 
 
 @projects_bp.route('/api/projects/<int:project_id>/divisions', methods=['POST'])
 def api_create_division(project_id):
-    guard = _login_guard()
-    if guard:
-        return guard
     Project.query.get_or_404(project_id)
 
     data = request.get_json(force=True, silent=True) or request.form
@@ -276,9 +257,6 @@ def api_create_division(project_id):
 
 @projects_bp.route('/api/divisions/<int:division_id>', methods=['DELETE'])
 def api_delete_division(division_id):
-    guard = _login_guard()
-    if guard:
-        return guard
     division = Division.query.get_or_404(division_id)
     db.session.delete(division)
     db.session.commit()
@@ -289,19 +267,14 @@ def api_delete_division(division_id):
 
 @projects_bp.route('/api/divisions/<int:division_id>/lines', methods=['GET'])
 def api_list_lines(division_id):
-    guard = _login_guard()
-    if guard:
-        return guard
-    Division.query.get_or_404(division_id)
+    division = Division.query.get_or_404(division_id)
+    visible_projects().filter_by(id=division.project_id).first_or_404()
     lines = Line.query.filter_by(division_id=division_id).order_by(Line.created_at.asc()).all()
     return jsonify({'lines': [l.to_dict() for l in lines]})
 
 
 @projects_bp.route('/api/divisions/<int:division_id>/lines', methods=['POST'])
 def api_create_line(division_id):
-    guard = _login_guard()
-    if guard:
-        return guard
     Division.query.get_or_404(division_id)
 
     form = request.form
@@ -355,9 +328,6 @@ def api_create_line(division_id):
 
 @projects_bp.route('/api/lines/<int:line_id>', methods=['DELETE'])
 def api_delete_line(line_id):
-    guard = _login_guard()
-    if guard:
-        return guard
     line = Line.query.get_or_404(line_id)
     db.session.delete(line)
     db.session.commit()

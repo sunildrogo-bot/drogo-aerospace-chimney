@@ -38,12 +38,7 @@ def process_job(app, job):
                 project = db.session.get(ChimneyProject, job['project_id'])
                 if project is None:
                     raise AssetUploadError('The project no longer exists. Upload was preserved but not activated.')
-                # NEVER replace the model already in use. Concurrent workers
-                # are prevented by the global OS file lock below.
-                if not project.tileset_path:
-                    project.tileset_path = result['model_path']
-                    db.session.commit()
-                    activated = True
+                activated = ChimneyProject.activate_first_model(project.id, result['model_path'])
         finish_job(app.static_folder, job, model_activated=activated)
         LOG.info('Completed upload job %s for project %s', job['id'], job['project_id'])
     except (AssetUploadError, OSError) as exc:
